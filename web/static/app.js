@@ -23,38 +23,306 @@ const tabs = new Map(); // id -> tab state
 
 // ---------- splash screen ----------
 
-(function initSplash() {
-  const splash = document.getElementById("splash");
-  const dismissBtn = document.getElementById("splash-dismiss");
-  const versionEl = document.getElementById("splash-version");
+const splash = document.getElementById("splash");
+const splashDismissBtn = document.getElementById("splash-dismiss");
+const splashVersionEl = document.getElementById("splash-version");
+const splashUpdateStatusEl = document.getElementById("splash-update-status");
+const headerLogoBtn = document.getElementById("header-logo-btn");
 
-  fetch("/api/version")
-    .then((r) => r.json())
-    .then((v) => {
-      versionEl.textContent = `v${v.version || "dev"}`;
-    })
-    .catch(() => {
-      versionEl.textContent = "";
-    });
+let splashAutoDismissTimer = null;
 
-  let dismissed = false;
-  function dismiss() {
-    if (dismissed) return;
-    dismissed = true;
-    splash.classList.add("hidden");
-    setTimeout(() => splash.remove(), 250);
+function hideSplash() {
+  splash.classList.add("hidden");
+  if (splashAutoDismissTimer) {
+    clearTimeout(splashAutoDismissTimer);
+    splashAutoDismissTimer = null;
+  }
+}
+
+function showSplash() {
+  splash.classList.remove("hidden");
+  renderSplashUpdateStatus();
+  splashAutoDismissTimer = setTimeout(hideSplash, 6000);
+}
+
+splashDismissBtn.addEventListener("click", hideSplash);
+splash.addEventListener("click", (e) => {
+  if (e.target === splash) hideSplash();
+});
+document.addEventListener("keydown", () => {
+  if (splash.classList.contains("hidden")) return;
+  hideSplash();
+});
+headerLogoBtn.addEventListener("click", showSplash);
+
+// ---------- version & self-update ----------
+
+const GITHUB_REPO = "bkrajendra/klogs";
+const UPDATE_CHECK_INITIAL_DELAY_MS = 5000;
+const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
+
+const versionBadge = document.getElementById("version-badge");
+const updateToast = document.getElementById("update-toast");
+const updateToastText = updateToast.querySelector(".update-toast-text");
+const updateToastUpdateBtn = updateToast.querySelector(".update-toast-update-btn");
+const updateToastSkipBtn = updateToast.querySelector(".update-toast-skip-btn");
+const updateToastCloseBtn = updateToast.querySelector(".update-toast-close-btn");
+
+const updateModal = document.getElementById("update-modal");
+const updateModalVersions = updateModal.querySelector(".update-modal-versions");
+const updateModalProgress = updateModal.querySelector(".update-modal-progress");
+const updateModalStage = updateModal.querySelector(".update-modal-stage");
+const updateModalProgressFill = updateModal.querySelector(".progress-bar-fill");
+const updateModalStartBtn = updateModal.querySelector(".update-modal-start-btn");
+const updateModalSkipBtn = updateModal.querySelector(".update-modal-skip-btn");
+const updateModalRestartBtn = updateModal.querySelector(".update-modal-restart-btn");
+const updateModalCloseBtn = updateModal.querySelector(".update-modal-close-btn");
+
+let currentVersionStr = "dev"; // "vX.Y.Z" once /api/version resolves
+const updateState = {
+  checked: false,
+  available: false,
+  latest: null,
+  // Reset only by a page reload / next launch - not persisted anywhere -
+  // so a skipped/dismissed update stops being pushed at the user for the
+  // rest of this session, but comes back next time.
+  dismissedThisSession: false,
+};
+
+function parseVersionParts(v) {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(v || "");
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+function isNewerVersion(latest, current) {
+  const a = parseVersionParts(latest);
+  const b = parseVersionParts(current);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i++) {
+    if (a[i] !== b[i]) return a[i] > b[i];
+  }
+  return false;
+}
+
+async function loadVersion() {
+  try {
+    const v = await fetchJSON("/api/version");
+    currentVersionStr = v.version === "dev" ? "dev" : `v${v.version}`;
+  } catch {
+    currentVersionStr = "dev";
+  }
+  splashVersionEl.textContent = currentVersionStr;
+  renderVersionBadge();
+  scheduleUpdateChecks();
+}
+
+function renderVersionBadge() {
+  versionBadge.textContent = currentVersionStr;
+  versionBadge.classList.toggle("update-available", updateState.available);
+  versionBadge.title = updateState.available
+    ? `Update available: ${updateState.latest} — click to install`
+    : `Current version: ${currentVersionStr}`;
+}
+
+function renderSplashUpdateStatus() {
+  if (!updateState.checked) {
+    splashUpdateStatusEl.hidden = true;
+    return;
+  }
+  splashUpdateStatusEl.hidden = false;
+  if (updateState.available) {
+    splashUpdateStatusEl.textContent = `⬆ ${updateState.latest} available — click to update`;
+    splashUpdateStatusEl.className = "splash-update-status available";
+  } else {
+    splashUpdateStatusEl.textContent = "✓ up to date";
+    splashUpdateStatusEl.className = "splash-update-status up-to-date";
+  }
+}
+
+splashUpdateStatusEl.addEventListener("click", () => {
+  if (updateState.available) openUpdateModal();
+});
+versionBadge.addEventListener("click", () => {
+  if (updateState.available) openUpdateModal();
+});
+
+function scheduleUpdateChecks() {
+  // A locally-built dev binary has no meaningful release to compare
+  // against (and self-updating over a dev build would be surprising), so
+  // don't proactively check at all - the badge just shows "dev" plainly.
+  if (currentVersionStr === "dev") return;
+  setTimeout(() => {
+    checkForUpdate();
+    setInterval(checkForUpdate, UPDATE_CHECK_INTERVAL_MS);
+  }, UPDATE_CHECK_INITIAL_DELAY_MS);
+}
+
+async function checkForUpdate() {
+  let data;
+  try {
+    const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`);
+    if (!res.ok) return;
+    data = await res.json();
+  } catch {
+    return; // offline / rate-limited / blocked - fail silently, not the user's problem
   }
 
-  dismissBtn.addEventListener("click", dismiss);
-  splash.addEventListener("click", (e) => {
-    if (e.target === splash) dismiss();
-  });
-  document.addEventListener("keydown", function onFirstKey() {
-    document.removeEventListener("keydown", onFirstKey);
-    dismiss();
-  });
-  setTimeout(dismiss, 6000);
-})();
+  updateState.checked = true;
+  if (data.tag_name && isNewerVersion(data.tag_name, currentVersionStr)) {
+    updateState.available = true;
+    updateState.latest = data.tag_name;
+  } else {
+    updateState.available = false;
+    updateState.latest = null;
+  }
+
+  renderVersionBadge();
+  renderSplashUpdateStatus();
+  if (updateState.available && !updateState.dismissedThisSession) {
+    showUpdateToast();
+  }
+}
+
+function showUpdateToast() {
+  updateToastText.textContent = `New version ${updateState.latest} available`;
+  updateToast.hidden = false;
+}
+
+function hideUpdateToast() {
+  updateToast.hidden = true;
+}
+
+updateToastUpdateBtn.addEventListener("click", () => {
+  hideUpdateToast();
+  openUpdateModal();
+});
+updateToastSkipBtn.addEventListener("click", () => {
+  updateState.dismissedThisSession = true;
+  hideUpdateToast();
+});
+updateToastCloseBtn.addEventListener("click", () => {
+  updateState.dismissedThisSession = true;
+  hideUpdateToast();
+});
+
+let updateStatusPollTimer = null;
+
+function openUpdateModal() {
+  updateModal.hidden = false;
+  updateModalVersions.textContent = `Current: ${currentVersionStr}   →   Latest: ${updateState.latest || "?"}`;
+  updateModalProgress.hidden = true;
+  updateModalProgress.classList.remove("error");
+  updateModalStartBtn.hidden = false;
+  updateModalSkipBtn.hidden = false;
+  updateModalRestartBtn.hidden = true;
+  updateModalCloseBtn.hidden = true;
+}
+
+function closeUpdateModal() {
+  updateModal.hidden = true;
+  if (updateStatusPollTimer) {
+    clearInterval(updateStatusPollTimer);
+    updateStatusPollTimer = null;
+  }
+}
+
+updateModal.addEventListener("click", (e) => {
+  if (e.target !== updateModal) return;
+  updateState.dismissedThisSession = true;
+  closeUpdateModal();
+});
+updateModalSkipBtn.addEventListener("click", () => {
+  updateState.dismissedThisSession = true;
+  closeUpdateModal();
+});
+updateModalCloseBtn.addEventListener("click", closeUpdateModal);
+
+function stageProgressPercent(stage) {
+  switch (stage) {
+    case "downloading":
+      return 30;
+    case "verifying":
+      return 60;
+    case "installing":
+      return 85;
+    case "done":
+      return 100;
+    default:
+      return 10;
+  }
+}
+
+function showUpdateError(message) {
+  updateModalProgress.hidden = false;
+  updateModalProgress.classList.add("error");
+  updateModalStage.textContent = `Update failed: ${message}`;
+  updateModalProgressFill.style.width = "100%";
+  updateModalCloseBtn.hidden = false;
+}
+
+function pollUpdateStatus() {
+  updateStatusPollTimer = setInterval(async () => {
+    let status;
+    try {
+      status = await fetchJSON("/api/update/status");
+    } catch {
+      return; // transient - keep polling
+    }
+
+    updateModalStage.textContent = status.message || status.stage;
+    updateModalProgressFill.style.width = stageProgressPercent(status.stage) + "%";
+
+    if (status.stage === "done") {
+      clearInterval(updateStatusPollTimer);
+      updateStatusPollTimer = null;
+      updateModalStage.textContent = `Installed ${status.version}. Restart to use it.`;
+      updateModalRestartBtn.hidden = false;
+      updateModalCloseBtn.hidden = false;
+    } else if (status.stage === "error") {
+      clearInterval(updateStatusPollTimer);
+      updateStatusPollTimer = null;
+      showUpdateError(status.message);
+    }
+  }, 400);
+}
+
+updateModalStartBtn.addEventListener("click", async () => {
+  if (!updateState.latest) return;
+  updateModalStartBtn.hidden = true;
+  updateModalSkipBtn.hidden = true;
+  updateModalProgress.hidden = false;
+  updateModalStage.textContent = "starting...";
+  updateModalProgressFill.style.width = "5%";
+
+  try {
+    await fetchJSON("/api/update/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ version: updateState.latest }),
+    });
+  } catch (err) {
+    showUpdateError(err.message);
+    return;
+  }
+  pollUpdateStatus();
+});
+
+updateModalRestartBtn.addEventListener("click", async () => {
+  updateModalRestartBtn.hidden = true;
+  updateModalStage.textContent = "Restarting...";
+  try {
+    await fetchJSON("/api/update/restart", { method: "POST" });
+  } catch (err) {
+    updateModalStage.textContent = `Restart failed: ${err.message}`;
+    updateModalRestartBtn.hidden = false;
+    return;
+  }
+  updateModalStage.textContent = "Restarting — reloading shortly...";
+  setTimeout(() => location.reload(), 2500);
+});
+
+loadVersion();
+showSplash();
 
 // ---------- theme ----------
 

@@ -42,14 +42,27 @@ without it, klogs still prints the local URL to open once it's listening.
 
 ## Update
 
-Re-run the same install command — it always installs the latest release.
-To pin a specific version instead:
+Three ways, all equivalent:
 
-```sh
-KLOGS_VERSION=v0.1.1 curl -fsSL https://raw.githubusercontent.com/bkrajendra/klogs/main/install.sh | bash
-```
-
-(`$env:KLOGS_VERSION = "v0.1.1"` before the `irm | iex` line on Windows.)
+- **From the web UI** — the version badge next to the theme toggle turns
+  into an update indicator when a newer release is out (checked 5s after
+  load, then every 30 min); click it, "Update now", then "Restart now"
+  once it's done. A floating notification also appears the first time an
+  update is found each session.
+- **`klogs update`** — downloads, verifies, and installs the latest release
+  in place, no browser needed:
+  ```sh
+  klogs update              # latest
+  klogs update --version v0.1.1   # pin a specific version
+  ```
+  Restart klogs yourself afterward to use it.
+- **Re-run the install command** — always installs the latest release:
+  ```sh
+  curl -fsSL https://raw.githubusercontent.com/bkrajendra/klogs/main/install.sh | bash
+  # or, to pin a version:
+  KLOGS_VERSION=v0.1.1 curl -fsSL https://raw.githubusercontent.com/bkrajendra/klogs/main/install.sh | bash
+  ```
+  (`$env:KLOGS_VERSION = "v0.1.1"` before the `irm | iex` line on Windows.)
 
 ## Flags
 
@@ -59,13 +72,20 @@ KLOGS_VERSION=v0.1.1 curl -fsSL https://raw.githubusercontent.com/bkrajendra/klo
 --kubeconfig string  path to kubeconfig (default: $KUBECONFIG or ~/.kube/config)
 --open               open the web UI in the default browser once the server starts
 --version            print version and exit
+
+klogs update [--version vX.Y.Z]   # download, verify, and install a release in place
 ```
 
 ## Features
 
-- Splash screen on load with the version, keyboard shortcuts, and a
-  "Get started" dismiss (or just press any key/click outside/wait a few
-  seconds).
+- Splash screen on load with the version, an update-available indicator,
+  keyboard shortcuts, and a "Get started" dismiss (or just press any
+  key/click outside/wait a few seconds) — click the header logo any time
+  to bring it back.
+- In-app updates: a green version badge (next to the theme toggle) flags
+  when a newer release is out; click it to download, verify, and install
+  in place, then restart with one more click. Skipping only silences it
+  for the rest of that session — the badge keeps tracking it either way.
 - Top filter bar: context → namespace → workload (`[d]`eployment/`[s]`ervice)
   → pod → container. Picking a pod (or container, for multi-container pods)
   opens its logs immediately — no extra click needed. Context and

@@ -87,6 +87,9 @@ All under `/api`. JSON responses.
 | GET | `/api/pods?context=&namespace=` | List all pods in namespace (flat list, for direct pod selection). |
 | GET | `/ws/logs?context=&namespace=&pod=&container=&follow=true&tailLines=500&previous=false` | WebSocket: streams log lines live. |
 | GET | `/api/logs/download?context=&namespace=&pod=&container=&tailLines=&previous=` | Streams the log as a file attachment (`Content-Disposition: attachment`), same underlying call as above but `Stream: false`/plain HTTP chunked response, no WS. |
+| POST | `/api/update/apply` | Body `{"version": "v0.2.0"}`. Starts downloading/installing that release in the background; `202` immediately, `409` if an update is already running. See [Self-update](#self-update) below. |
+| GET | `/api/update/status` | Current update progress: `{"stage": "idle"\|"downloading"\|"verifying"\|"installing"\|"done"\|"error", "version": "...", "message": "..."}`. Polled by the update modal. |
+| POST | `/api/update/restart` | Spawns the newly-installed binary and shuts this process down. `400` if there's no completed (`done`) update to restart into. |
 
 Notes:
 - `kind` is `deployment` or `service`.
@@ -118,6 +121,95 @@ controller picks up and rolls pods over for.
 
 Everything else in the API stays read-only (`list`/`get`/`get log`).
 
+## Self-update
+
+The frontend checks `https://api.github.com/repos/bkrajendra/klogs/releases/latest`
+**directly from the browser** (not through the Go backend — GitHub's API
+allows anonymous cross-origin GET for public repo data, so no proxy
+endpoint is needed just for the check): once 5s after page load, then
+every 30 minutes, comparing `tag_name` against `/api/version`. A build
+with `version == "dev"` (i.e. not built via GoReleaser) skips this
+entirely — there's no meaningful release to compare a dev binary against.
+
+Actually *applying* an update requires filesystem/process access the
+browser doesn't have, so that part is real backend work
+(`internal/update`):
+
+1. `POST /api/update/apply {"version": "vX.Y.Z"}` downloads
+   `klogs_<GOOS>_<GOARCH>.{tar.gz,zip}` + `checksums.txt` for that tag from
+   the GitHub release, verifies the SHA-256 checksum (same file, same
+   check as `install.sh`), extracts the binary into the same directory as
+   the running executable, and swaps it into place by **renaming the
+   running executable aside first** (`klogs` → `klogs.old`), then renaming
+   the new binary into the original name. That two-step dance — rather
+   than deleting/overwriting directly — is what makes this portable to
+   Windows: Windows won't let you delete or overwrite a running `.exe`'s
+   data, but renaming it is fine, and the exact same rename-based swap
+   also happens to be an atomic, same-filesystem operation on Unix.
+   Progress is polled via `GET /api/update/status`.
+2. On any failure — bad checksum, extraction error, permission denied —
+   the swap is rolled back (or never attempted) and the running process is
+   completely unaffected; `internal/update/update_test.go` covers both the
+   success path and a checksum-mismatch path that must leave the original
+   binary byte-for-byte untouched.
+3. `POST /api/update/restart` (only accepted once `apply` reports
+   `"stage": "done"`) spawns the just-installed binary as a new OS
+   process with the same `os.Args`, then shuts down the current
+   `http.Server` to free the port, then exits. The UI reloads the page a
+   couple seconds later to pick the new process back up.
+
+Two non-obvious correctness issues turned up only when this was tested
+against a real spawned process (not just unit tests) and are worth
+calling out for anyone touching this code:
+
+- **`os.Executable()` becomes unreliable after step 1's rename.** On
+  Linux, `/proc/self/exe` (what `os.Executable()` reads) tracks the
+  *current* name of the running process's backing file — so once we've
+  renamed it aside and back, a fresh call resolves to a path that either
+  points at the wrong file or, if the `.old` backup was already cleaned
+  up, doesn't exist at all. Fix: the executable path is resolved and
+  cached exactly once per process (`Manager.currentExecutable`), and every
+  later use (a second update, or the eventual restart) reuses that cached
+  value instead of asking the OS again.
+- **`http.Server.Shutdown()` racing `main()`'s own return.** `Shutdown`
+  closes the listener as its first action, which immediately unblocks the
+  main goroutine's blocked `Serve()` call — and since that's the expected
+  `http.ErrServerClosed`, `main()` was originally just falling through and
+  returning right after, which kills the *entire process*, including the
+  goroutine that called `Shutdown` and was about to spawn the replacement
+  binary. That race is won by `main()` returning almost every time, since
+  unblocking `Serve()` takes far less work than the scheduler resuming the
+  other goroutine's continuation. Fix: `main()` blocks on `select{}` after
+  `Serve()` returns instead of letting the function end, so only the
+  restart goroutine's own explicit `os.Exit` (success or failure path,
+  both covered) ends the process.
+
+`KLOGS_UPDATE_BASE_URL` overrides the `https://github.com` base the
+backend downloads releases from — not used in production, just what let
+this whole flow get tested end-to-end against a local fake release server
+instead of real GitHub.
+
+### `klogs update` — the safe fallback
+
+The web UI's "Restart now" respawns a live server process, which is more
+can-go-wrong surface than a lot of tools would take on for this. It's
+never silent (only ever runs from an explicit button click) and degrades
+safely (worst case: the process exits and needs a manual restart, same
+outcome as choosing not to auto-restart at all) — but it's still more
+moving parts than strictly necessary, and it's only been verified
+end-to-end on Linux in this repo, not on Windows.
+
+`klogs update [--version vX.Y.Z]` is the CLI-only alternative: it calls
+the exact same `internal/update` download/verify/install logic (so it's
+exercised by the same tests), but stops there — no HTTP server involved,
+no self-respawn, nothing that differs by platform beyond the
+already-portable rename-aside swap itself. It prints progress and tells
+you to restart klogs yourself when it's done. This is the one to reach
+for (or to point users at) if the browser-based updater ever seems
+untrustworthy on a given platform; re-running `install.sh`/`install.ps1`
+accomplishes the same thing too, since both ultimately do the same
+download-verify-swap.
+
 ## Log streaming
 
 - WebSocket handler opens `clientset.CoreV1().Pods(ns).GetLogs(pod, &opts)`
@@ -140,19 +232,42 @@ Layout, top to bottom:
 0. **Splash screen**: shown on every page load, dismissed by its button,
    Escape/any key, a backdrop click, or automatically after 6s. Shows an
    original SVG logo (an abstract "log lines" mark, not the Kubernetes
-   logo), the running version (fetched from `/api/version`), the keyboard
-   shortcut legend, and a "Designed by Rajendra Khope /
-   rajendrakhope.com" credit line. It's decoration on top of the already-
-   loading app underneath, not a gate — the context/namespace/etc. fetches
-   in `init()` proceed in parallel regardless of whether it's dismissed.
+   logo), the running version (fetched from `/api/version`), an update
+   status line (see below), the keyboard shortcut legend, and a "Designed
+   by Rajendra Khope / rajendrakhope.com" credit line. It's decoration on
+   top of the already-loading app underneath, not a gate — the
+   context/namespace/etc. fetches in `init()` proceed in parallel
+   regardless of whether it's dismissed. The splash stays in the DOM
+   (just toggled via a `.hidden` class) rather than being removed after
+   its first dismissal, so clicking the small version of the same logo in
+   the header re-opens it at any time.
 1. **Top filter bar**: a cascading chain of dropdowns — context → namespace
    → workload (Deployment/Service, shown as `[d]`/`[s]`) → pod → container
-   (only shown when the pod has more than one container) — plus a
-   light/dark theme toggle. Context and namespace selections are persisted
-   in `localStorage` and restored on the next load (falling back to the
-   kubeconfig's current context / the `default` namespace if the saved
-   value no longer exists). Each select repopulates/resets the ones after
-   it when changed.
+   (only shown when the pod has more than one container) — a version
+   badge, and a light/dark theme toggle. Context and namespace selections
+   are persisted in `localStorage` and restored on the next load (falling
+   back to the kubeconfig's current context / the `default` namespace if
+   the saved value no longer exists). Each select repopulates/resets the
+   ones after it when changed.
+   - The version badge is green and shows the running version normally;
+     when an update is available it grows a small pulsing dot and its
+     click target changes purpose — it opens the update modal instead of
+     doing nothing. Clicking it (or the splash's update line, or the
+     toast's "Update" button) all lead to the same modal.
+   - An update toast can appear floating at the bottom-right the first
+     time a background check (5s after load, then every 30 min — see
+     [Self-update](#self-update)) finds a newer release. "Skip"/its own
+     ×/clicking "Update" (which opens the modal) all dismiss it for the
+     rest of this session (`dismissedThisSession`, an in-memory flag —
+     deliberately *not* persisted, so it resets on reload or next
+     launch); the badge keeps indicating the update either way, so it's
+     never actually lost, just stopped from re-interrupting.
+   - The update modal shows current → latest, an "Update now" button that
+     calls `POST /api/update/apply` and then polls
+     `GET /api/update/status` every 400ms to drive a progress bar/stage
+     label, and — once done — a "Restart now" button that calls
+     `POST /api/update/restart` and reloads the page ~2.5s later to pick
+     the restarted server back up.
 2. **Auto-opening logs**: picking a pod (or, for multi-container pods,
    picking/confirming a container) immediately opens a new log tab for it —
    there's no separate "open logs" button. Picking a different container
@@ -229,16 +344,21 @@ No frontend framework, no build tooling — plain HTML/CSS/JS served from
 ```
 klogs/
 ├── cmd/klogs/
-│   └── main.go              # flag parsing, server bootstrap
+│   └── main.go              # flag/subcommand parsing, server bootstrap
 ├── internal/
 │   ├── k8s/
 │   │   ├── client.go        # kubeconfig loading, per-context clientset cache
 │   │   ├── workloads.go     # list namespaces/deployments/services/pods
 │   │   ├── logs.go          # log stream/download helpers
 │   │   └── restart.go       # rolling-restart a deployment/service
+│   ├── update/
+│   │   ├── update.go        # download/verify/install a release (Manager)
+│   │   ├── update_test.go   # exercises the above against a fake release server
+│   │   ├── restart.go       # respawn the installed binary, shut this one down
+│   │   └── latest.go        # GitHub "latest release" tag lookup (used by the CLI)
 │   └── server/
 │       ├── server.go        # http.Handler wiring, embed.FS mount
-│       ├── api.go           # REST handlers
+│       ├── api.go           # REST + /api/update/* handlers
 │       └── ws.go            # websocket log handler
 ├── web/
 │   └── static/
@@ -277,6 +397,17 @@ On startup: parses kubeconfig, binds the listening socket, prints the URL,
 and — if `--open` was passed — launches it in the OS default browser
 (`open` on macOS, `rundll32 url.dll,FileProtocolHandler` on Windows,
 `xdg-open` elsewhere) before serving.
+
+There's one subcommand, checked for before any of the flags above:
+
+```
+klogs update [--version vX.Y.Z]
+```
+
+Downloads, verifies, and installs the given release (latest, if
+`--version` is omitted) in place, then exits — it doesn't start the
+server or restart anything itself. See
+[`klogs update` — the safe fallback](#klogs-update--the-safe-fallback).
 
 ## Key dependencies
 

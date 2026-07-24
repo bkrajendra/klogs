@@ -6,8 +6,10 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/bkrajendra/klogs/internal/k8s"
+	"github.com/bkrajendra/klogs/internal/update"
 )
 
 func (s *Server) registerAPI(mux *http.ServeMux) {
@@ -20,6 +22,9 @@ func (s *Server) registerAPI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/pods", s.handlePods)
 	mux.HandleFunc("GET /api/logs/download", s.handleLogDownload)
 	mux.HandleFunc("GET /ws/logs", s.handleLogWS)
+	mux.HandleFunc("POST /api/update/apply", s.handleUpdateApply)
+	mux.HandleFunc("GET /api/update/status", s.handleUpdateStatus)
+	mux.HandleFunc("POST /api/update/restart", s.handleUpdateRestart)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -124,6 +129,55 @@ func (s *Server) handleRestartWorkload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"status": "restarted"})
+}
+
+func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Version == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("version is required"))
+		return
+	}
+
+	if !s.updateMgr.Start(body.Version) {
+		writeError(w, http.StatusConflict, fmt.Errorf("an update is already in progress"))
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+	writeJSON(w, map[string]string{"status": "started"})
+}
+
+func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.updateMgr.Status())
+}
+
+// handleUpdateRestart spawns the newly-installed binary and shuts this
+// server down. The response is written and flushed before any of that
+// happens in a goroutine, since update.Restart shuts down this same
+// http.Server and would otherwise deadlock waiting for this very handler
+// to return.
+func (s *Server) handleUpdateRestart(w http.ResponseWriter, r *http.Request) {
+	if st := s.updateMgr.Status(); st.Stage != update.StageDone {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("no completed update to restart into"))
+		return
+	}
+	if s.httpServer == nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("server not ready to restart"))
+		return
+	}
+
+	writeJSON(w, map[string]string{"status": "restarting"})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		if err := s.updateMgr.Restart(s.httpServer); err != nil {
+			s.log.Error("restart failed", "error", err)
+		}
+	}()
 }
 
 // logOptionsFromQuery parses the query params shared by the download and

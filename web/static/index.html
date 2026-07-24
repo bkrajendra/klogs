@@ -28,6 +28,7 @@
 
     <h1 class="splash-title">klogs</h1>
     <div class="splash-version" id="splash-version">&nbsp;</div>
+    <div class="splash-update-status" id="splash-update-status" hidden></div>
 
     <div class="splash-shortcuts">
       <h2>Keyboard shortcuts</h2>
@@ -50,19 +51,21 @@
 
 <header>
   <h1>
-    <svg class="header-logo" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <defs>
-        <linearGradient id="header-g" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stop-color="#3b82f6"/>
-          <stop offset="1" stop-color="#1e3a8a"/>
-        </linearGradient>
-      </defs>
-      <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#header-g)"/>
-      <rect x="14" y="19" width="36" height="5" rx="2.5" fill="#fff" opacity="0.95"/>
-      <rect x="14" y="29.5" width="28" height="5" rx="2.5" fill="#fff" opacity="0.8"/>
-      <rect x="14" y="40" width="20" height="5" rx="2.5" fill="#fff" opacity="0.6"/>
-      <rect x="38" y="40" width="6" height="5" rx="1" fill="#fff" opacity="0.95"/>
-    </svg>
+    <button id="header-logo-btn" class="logo-btn" title="Show intro / shortcuts">
+      <svg class="header-logo" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <linearGradient id="header-g" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#3b82f6"/>
+            <stop offset="1" stop-color="#1e3a8a"/>
+          </linearGradient>
+        </defs>
+        <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#header-g)"/>
+        <rect x="14" y="19" width="36" height="5" rx="2.5" fill="#fff" opacity="0.95"/>
+        <rect x="14" y="29.5" width="28" height="5" rx="2.5" fill="#fff" opacity="0.8"/>
+        <rect x="14" y="40" width="20" height="5" rx="2.5" fill="#fff" opacity="0.6"/>
+        <rect x="38" y="40" width="6" height="5" rx="1" fill="#fff" opacity="0.95"/>
+      </svg>
+    </button>
     klogs
   </h1>
   <div class="pickers">
@@ -82,6 +85,7 @@
       <select id="container-select"></select>
     </label>
   </div>
+  <button id="version-badge" class="version-badge" title="Current version">v&hellip;</button>
   <button id="theme-toggle" class="icon-btn" title="Toggle light/dark theme">🌙</button>
 </header>
 
@@ -121,6 +125,30 @@
     <pre class="log-view"></pre>
   </div>
 </template>
+
+<div id="update-toast" class="update-toast" hidden>
+  <span class="update-toast-text"></span>
+  <button class="update-toast-update-btn">Update</button>
+  <button class="update-toast-skip-btn">Skip</button>
+  <button class="update-toast-close-btn" title="Dismiss">&times;</button>
+</div>
+
+<div id="update-modal" class="modal-overlay" hidden>
+  <div class="modal-card">
+    <h2>Update available</h2>
+    <p class="update-modal-versions"></p>
+    <div class="update-modal-progress" hidden>
+      <div class="update-modal-stage"></div>
+      <div class="progress-bar"><div class="progress-bar-fill"></div></div>
+    </div>
+    <div class="update-modal-actions">
+      <button class="update-modal-start-btn">Update now</button>
+      <button class="update-modal-skip-btn">Skip</button>
+      <button class="update-modal-restart-btn" hidden>Restart now</button>
+      <button class="update-modal-close-btn" hidden>Close</button>
+    </div>
+  </div>
+</div>
 
 <script src="/app.js"></script>
 </body>
