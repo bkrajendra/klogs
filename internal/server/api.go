@@ -15,6 +15,7 @@ func (s *Server) registerAPI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/namespaces", s.handleNamespaces)
 	mux.HandleFunc("GET /api/workloads", s.handleWorkloads)
 	mux.HandleFunc("GET /api/workloads/{kind}/{name}/pods", s.handleWorkloadPods)
+	mux.HandleFunc("POST /api/workloads/{kind}/{name}/restart", s.handleRestartWorkload)
 	mux.HandleFunc("GET /api/pods", s.handlePods)
 	mux.HandleFunc("GET /api/logs/download", s.handleLogDownload)
 	mux.HandleFunc("GET /ws/logs", s.handleLogWS)
@@ -101,6 +102,23 @@ func (s *Server) handlePods(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, pods)
+}
+
+func (s *Server) handleRestartWorkload(w http.ResponseWriter, r *http.Request) {
+	contextName := r.URL.Query().Get("context")
+	namespace := r.URL.Query().Get("namespace")
+	kind := r.PathValue("kind")
+	name := r.PathValue("name")
+	if namespace == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("namespace is required"))
+		return
+	}
+
+	if err := s.km.RestartWorkload(r.Context(), contextName, namespace, kind, name); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "restarted"})
 }
 
 // logOptionsFromQuery parses the query params shared by the download and

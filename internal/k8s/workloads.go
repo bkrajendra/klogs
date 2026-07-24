@@ -125,51 +125,72 @@ func (m *Manager) WorkloadPods(ctx context.Context, contextName, namespace, kind
 		return nil, err
 	}
 
-	var selector labels.Selector
+	var pods []corev1.Pod
 	switch kind {
 	case "deployment":
-		d, err := cs.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("getting deployment %q: %w", name, err)
-		}
-		selector, err = metav1.LabelSelectorAsSelector(d.Spec.Selector)
-		if err != nil {
-			return nil, fmt.Errorf("parsing deployment selector: %w", err)
-		}
+		pods, err = podsForDeployment(ctx, cs, namespace, name)
 	case "service":
-		s, err := cs.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("getting service %q: %w", name, err)
-		}
-		if len(s.Spec.Selector) == 0 {
-			return podsFromEndpoints(ctx, cs, namespace, name)
-		}
-		selector = labels.SelectorFromSet(s.Spec.Selector)
+		pods, err = podsForServiceSelector(ctx, cs, namespace, name)
 	default:
 		return nil, fmt.Errorf("unknown workload kind %q", kind)
 	}
-
-	list, err := cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector.String()})
 	if err != nil {
-		return nil, fmt.Errorf("listing pods for %s %q: %w", kind, name, err)
+		return nil, err
 	}
 
-	out := make([]Pod, 0, len(list.Items))
-	for _, p := range list.Items {
+	out := make([]Pod, 0, len(pods))
+	for _, p := range pods {
 		out = append(out, toPod(p))
 	}
 	return out, nil
 }
 
+func podsForDeployment(ctx context.Context, cs kubernetes.Interface, namespace, name string) ([]corev1.Pod, error) {
+	d, err := cs.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("getting deployment %q: %w", name, err)
+	}
+	selector, err := metav1.LabelSelectorAsSelector(d.Spec.Selector)
+	if err != nil {
+		return nil, fmt.Errorf("parsing deployment selector: %w", err)
+	}
+
+	list, err := cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector.String()})
+	if err != nil {
+		return nil, fmt.Errorf("listing pods for deployment %q: %w", name, err)
+	}
+	return list.Items, nil
+}
+
+// podsForServiceSelector resolves the pods backing a Service by its
+// spec.selector, falling back to its Endpoints for selector-less Services
+// (e.g. ones backed by manually managed Endpoints).
+func podsForServiceSelector(ctx context.Context, cs kubernetes.Interface, namespace, serviceName string) ([]corev1.Pod, error) {
+	s, err := cs.CoreV1().Services(namespace).Get(ctx, serviceName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("getting service %q: %w", serviceName, err)
+	}
+	if len(s.Spec.Selector) == 0 {
+		return podsFromEndpoints(ctx, cs, namespace, serviceName)
+	}
+
+	selector := labels.SelectorFromSet(s.Spec.Selector)
+	list, err := cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector.String()})
+	if err != nil {
+		return nil, fmt.Errorf("listing pods for service %q: %w", serviceName, err)
+	}
+	return list.Items, nil
+}
+
 // podsFromEndpoints resolves pods behind a selector-less Service (e.g. one
 // backed by manually managed Endpoints) via its Endpoints object.
-func podsFromEndpoints(ctx context.Context, cs kubernetes.Interface, namespace, serviceName string) ([]Pod, error) {
+func podsFromEndpoints(ctx context.Context, cs kubernetes.Interface, namespace, serviceName string) ([]corev1.Pod, error) {
 	ep, err := cs.CoreV1().Endpoints(namespace).Get(ctx, serviceName, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("getting endpoints for service %q: %w", serviceName, err)
 	}
 
-	var out []Pod
+	var out []corev1.Pod
 	seen := make(map[string]bool)
 	for _, subset := range ep.Subsets {
 		for _, addr := range subset.Addresses {
@@ -181,7 +202,7 @@ func podsFromEndpoints(ctx context.Context, cs kubernetes.Interface, namespace, 
 			if err != nil {
 				continue
 			}
-			out = append(out, toPod(*p))
+			out = append(out, *p)
 		}
 	}
 	return out, nil

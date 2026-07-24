@@ -11,7 +11,7 @@ See [design.md](design.md) for the full spec.
 go run ./cmd/klogs
 ```
 
-Then open http://127.0.0.1:8080.
+Then open http://127.0.0.1:8080 (or pass `--open` to have it opened for you).
 
 Flags:
 
@@ -19,7 +19,22 @@ Flags:
 --port int          port to serve the web UI on (default 8080)
 --addr string        address to bind to (default "127.0.0.1")
 --kubeconfig string  path to kubeconfig (default: $KUBECONFIG or ~/.kube/config)
+--open               open the web UI in the default browser once the server starts
+--version            print version and exit
 ```
+
+## Features
+
+- Context/namespace pickers, workload (Deployment/Service) list with
+  expandable pod/container view.
+- Multi-tab live log streaming (WebSocket) with autoscroll, word-wrap, and
+  full-screen toggles — each with a keyboard shortcut (`a`/`w`/`f`) while a
+  tab is active. Close a single tab from its own × or clear the whole strip
+  with "close all".
+- Log download, and a "previous container" toggle for crash-looping pods.
+- Restart a Deployment (or the Deployment behind a Service) straight from
+  the workload list, with a confirmation prompt first.
+- Light/dark theme toggle, persisted locally.
 
 ## Build
 

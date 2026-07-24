@@ -26,11 +26,15 @@ convenience tool for local/dev use on top of `kubectl`-equivalent access.
 
 - No log aggregation, indexing, or search across pods/time (use Loki/etc for
   that).
-- No writing/deleting of cluster resources.
+- No general cluster write access (no `create`/`delete`/`exec`, no editing
+  resource specs). The one deliberate exception is restarting a Deployment
+  (or the Deployment behind a Service) from the UI — see
+  [Restarting workloads](#restarting-workloads) below.
 - No multi-user auth/session model. If exposed beyond localhost, put it
   behind your own reverse proxy / auth.
 - No persistence — nothing is stored server-side beyond in-memory buffers
-  needed to serve a download of the currently-streamed log.
+  needed to serve a download of the currently-streamed log. UI preferences
+  (theme) are stored client-side only, in `localStorage`.
 
 ## Architecture
 
@@ -78,6 +82,7 @@ All under `/api`. JSON responses.
 | GET | `/api/namespaces?context=` | List namespaces in the selected context. |
 | GET | `/api/workloads?context=&namespace=` | List Deployments and Services in the namespace, each with pod count/ready status. |
 | GET | `/api/workloads/{kind}/{name}/pods?context=&namespace=` | List pods backing a Deployment (by selector) or a Service (by endpoint/selector), with container names. |
+| POST | `/api/workloads/{kind}/{name}/restart?context=&namespace=` | Restart a Deployment (or the Deployment behind a Service — see below). |
 | GET | `/api/pods?context=&namespace=` | List all pods in namespace (flat list, for direct pod selection). |
 | GET | `/ws/logs?context=&namespace=&pod=&container=&follow=true&tailLines=500&previous=false` | WebSocket: streams log lines live. |
 | GET | `/api/logs/download?context=&namespace=&pod=&container=&tailLines=&previous=` | Streams the log as a file attachment (`Content-Disposition: attachment`), same underlying call as above but `Stream: false`/plain HTTP chunked response, no WS. |
@@ -90,6 +95,27 @@ Notes:
   containers so the UI can offer a dropdown when a pod has more than one.
 - `previous=true` maps to `Previous: true` in `PodLogOptions`, for viewing a
   crashed container's last logs.
+
+## Restarting workloads
+
+The one write operation klogs performs: `POST /api/workloads/{kind}/{name}/restart`
+triggers a rolling restart the same way `kubectl rollout restart` does — it
+patches `spec.template.metadata.annotations["kubectl.kubernetes.io/restartedAt"]`
+on the Deployment with the current timestamp, which the Deployment
+controller picks up and rolls pods over for.
+
+- `kind=deployment`: patches that Deployment directly.
+- `kind=service`: klogs resolves the Service's backing pods (same selector
+  logic as the pods endpoint), walks each pod's owner chain
+  (`Pod -> ReplicaSet -> Deployment`), and restarts the single Deployment
+  found. If the pods trace back to more than one Deployment (or none/an
+  unrecognized owner), the request fails with an explanatory error instead
+  of guessing.
+- The UI always shows a confirmation dialog before sending the request,
+  since this changes live cluster state and isn't reversible by clicking
+  again.
+
+Everything else in the API stays read-only (`list`/`get`/`get log`).
 
 ## Log streaming
 
@@ -110,18 +136,24 @@ Notes:
 
 Layout, top to bottom:
 
-1. **Context selector** (dropdown, populated from `/api/contexts`).
-2. **Namespace selector** (dropdown, populated on context change).
-3. **Workload list** (table: kind, name, ready/available pods) — click a row
-   to expand its pod list.
-4. **Pod/container picker** — clicking a workload row expands to show its
-   pods; clicking a pod shows its containers if more than one.
-5. **Log viewer pane**: opens on pod+container click.
-   - Streams via WebSocket, auto-scrolls, monospace, dark background.
-   - Toolbar: pause/resume autoscroll, clear view, "previous container logs"
-     toggle, tail-lines input, download button.
-   - Multiple log viewer tabs can be open at once (one per pod/container),
-     each with its own WS connection.
+1. **Header**: context selector, namespace selector, and a light/dark theme
+   toggle (persisted in `localStorage`, defaults to the OS preference).
+2. **Workload list** (table: kind, name, ready/available pods, restart
+   button) — click a row to expand its pod list; the selected row stays
+   visually highlighted. Restart asks for confirmation before calling the
+   restart endpoint.
+3. **Pod/container picker** — clicking a workload row expands to show its
+   pods; clicking a pod shows its containers if more than one. The "open
+   logs" button uses the accent color so it reads clearly against the row.
+4. **Log viewer tabs**: opens on pod+container click, one tab per
+   pod/container, each with its own WebSocket connection.
+   - The tab strip shows each tab's title with its own close (×) button on
+     the tab itself, plus a "close all" button for the whole strip.
+   - Toolbar per tab: tail-lines input, "previous container logs" toggle,
+     autoscroll on/off, word-wrap on/off, full screen, clear, download.
+   - Keyboard shortcuts (active tab, not while typing in a field): `a`
+     toggles autoscroll, `w` toggles word wrap, `f` toggles full screen for
+     that tab.
 
 No frontend framework, no build tooling — plain HTML/CSS/JS served from
 `web/static/` and embedded with `go:embed` at compile time.
@@ -136,7 +168,8 @@ klogs/
 │   ├── k8s/
 │   │   ├── client.go        # kubeconfig loading, per-context clientset cache
 │   │   ├── workloads.go     # list namespaces/deployments/services/pods
-│   │   └── logs.go          # log stream/download helpers
+│   │   ├── logs.go          # log stream/download helpers
+│   │   └── restart.go       # rolling-restart a deployment/service
 │   └── server/
 │       ├── server.go        # http.Handler wiring, embed.FS mount
 │       ├── api.go           # REST handlers
@@ -165,11 +198,15 @@ klogs [flags]
 
   --port int          Port to serve the web UI on (default 8080)
   --kubeconfig string Path to kubeconfig (default: $KUBECONFIG or ~/.kube/config)
-  --addr string        Bind address (default "127.0.0.1")
+  --addr string       Bind address (default "127.0.0.1")
+  --open              Open the web UI in the default browser once the server starts
+  --version           Print version and exit
 ```
 
-On startup: parses kubeconfig, prints the URL to open
-(`http://127.0.0.1:8080`), and serves.
+On startup: parses kubeconfig, binds the listening socket, prints the URL,
+and — if `--open` was passed — launches it in the OS default browser
+(`open` on macOS, `rundll32 url.dll,FileProtocolHandler` on Windows,
+`xdg-open` elsewhere) before serving.
 
 ## Key dependencies
 
@@ -245,9 +282,10 @@ no manual tagging or build step is required.
 - Binds to `127.0.0.1` by default — not exposed on the network unless the
   user explicitly passes `--addr 0.0.0.0`.
 - Uses whatever access the local kubeconfig context already has; klogs
-  itself performs no privilege escalation and only ever does read
-  operations (`list`, `get`, `get log`) against the cluster — no `exec`,
-  `delete`, `create`, etc.
+  itself performs no privilege escalation and does not `exec`, `delete`,
+  or `create` anything. The single exception is the restart action
+  (`patch` on a Deployment's pod template annotation, gated behind a
+  confirmation dialog in the UI) — everything else is `list`/`get`/`get log`.
 - No credentials are accepted or stored by the web UI itself; all auth is
   delegated to the kubeconfig's existing auth plugins (exec plugins, OIDC,
   client certs, etc. all work as-is since we use client-go + clientcmd

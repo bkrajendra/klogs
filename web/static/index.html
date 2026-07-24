@@ -17,19 +17,23 @@
       <select id="namespace-select"></select>
     </label>
   </div>
+  <button id="theme-toggle" class="icon-btn" title="Toggle light/dark theme">🌙</button>
 </header>
 
 <main>
   <section id="workloads-pane">
     <h2>Workloads</h2>
     <table id="workloads-table">
-      <thead><tr><th>Kind</th><th>Name</th><th>Ready</th></tr></thead>
+      <thead><tr><th>Kind</th><th>Name</th><th>Ready</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </section>
 
   <section id="tabs-pane">
-    <div id="tab-bar"></div>
+    <div id="tab-bar-row">
+      <div id="tab-bar"></div>
+      <button id="close-all-tabs" title="Close all open log tabs">close all</button>
+    </div>
     <div id="tab-content"></div>
   </section>
 </main>
@@ -39,9 +43,10 @@
     <td class="w-kind"></td>
     <td class="w-name"></td>
     <td class="w-ready"></td>
+    <td><button class="restart-btn" title="Restart">&#8635; restart</button></td>
   </tr>
   <tr class="pods-row" hidden>
-    <td colspan="3"><div class="pods-list"></div></td>
+    <td colspan="4"><div class="pods-list"></div></td>
   </tr>
 </template>
 
@@ -51,10 +56,11 @@
       <span class="log-title"></span>
       <label>Tail lines <input type="number" class="tail-lines" placeholder="all" min="1"></label>
       <label><input type="checkbox" class="previous-toggle"> previous</label>
-      <button class="autoscroll-toggle" title="Toggle autoscroll">autoscroll: on</button>
+      <button class="autoscroll-toggle" title="Toggle autoscroll (a)">autoscroll: on</button>
+      <button class="wordwrap-toggle" title="Toggle word wrap (w)">wrap: on</button>
+      <button class="fullscreen-toggle" title="Toggle full screen (f)">fullscreen</button>
       <button class="clear-btn">clear</button>
       <button class="download-btn">download</button>
-      <button class="close-btn">close</button>
       <span class="log-status"></span>
     </div>
     <pre class="log-view"></pre>

@@ -5,19 +5,44 @@ const namespaceSelect = document.getElementById("namespace-select");
 const workloadsBody = document.querySelector("#workloads-table tbody");
 const tabBar = document.getElementById("tab-bar");
 const tabContent = document.getElementById("tab-content");
+const closeAllBtn = document.getElementById("close-all-tabs");
+const themeToggleBtn = document.getElementById("theme-toggle");
 const workloadRowTemplate = document.getElementById("workload-row-template");
 const logTabTemplate = document.getElementById("log-tab-template");
 
 let tabSeq = 0;
-const tabs = new Map(); // id -> { ws, el, autoscroll }
+let activeTabId = null;
+let selectedRow = null;
+const tabs = new Map(); // id -> tab state
 
-async function fetchJSON(url) {
-  const res = await fetch(url);
+// ---------- theme ----------
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  themeToggleBtn.textContent = theme === "dark" ? "☀️" : "🌙";
+  themeToggleBtn.title = theme === "dark" ? "Switch to light mode" : "Switch to dark mode";
+}
+
+let currentTheme =
+  localStorage.getItem("klogs-theme") ||
+  (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+applyTheme(currentTheme);
+
+themeToggleBtn.addEventListener("click", () => {
+  currentTheme = currentTheme === "dark" ? "light" : "dark";
+  localStorage.setItem("klogs-theme", currentTheme);
+  applyTheme(currentTheme);
+});
+
+// ---------- data loading ----------
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, opts);
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(body.error || res.statusText);
   }
-  return res.json();
+  return res.status === 204 ? null : res.json();
 }
 
 function currentContext() {
@@ -58,6 +83,7 @@ async function loadNamespaces() {
 
 async function loadWorkloads() {
   workloadsBody.innerHTML = "";
+  selectedRow = null;
   if (!currentNamespace()) return;
 
   const workloads = await fetchJSON(
@@ -69,6 +95,7 @@ async function loadWorkloads() {
     const row = frag.querySelector(".workload-row");
     const podsRow = frag.querySelector(".pods-row");
     const podsList = frag.querySelector(".pods-list");
+    const restartBtn = frag.querySelector(".restart-btn");
 
     frag.querySelector(".w-kind").textContent = w.kind;
     frag.querySelector(".w-name").textContent = w.name;
@@ -77,6 +104,10 @@ async function loadWorkloads() {
 
     let loaded = false;
     row.addEventListener("click", async () => {
+      if (selectedRow && selectedRow !== row) selectedRow.classList.remove("selected");
+      row.classList.add("selected");
+      selectedRow = row;
+
       const willShow = podsRow.hidden;
       podsRow.hidden = !willShow;
       if (willShow && !loaded) {
@@ -89,8 +120,37 @@ async function loadWorkloads() {
       }
     });
 
+    restartBtn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      restartWorkload(restartBtn, w.kind, w.name);
+    });
+
     workloadsBody.appendChild(row);
     workloadsBody.appendChild(podsRow);
+  }
+}
+
+async function restartWorkload(btn, kind, name) {
+  if (!confirm(`Restart ${kind} "${name}"? This will restart its pods.`)) return;
+
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "restarting...";
+  try {
+    await fetchJSON(
+      `/api/workloads/${encodeURIComponent(kind)}/${encodeURIComponent(name)}/restart` +
+        `?context=${encodeURIComponent(currentContext())}&namespace=${encodeURIComponent(currentNamespace())}`,
+      { method: "POST" }
+    );
+    btn.textContent = "restarted!";
+  } catch (err) {
+    btn.textContent = "failed";
+    alert(`Restart failed: ${err.message}`);
+  } finally {
+    setTimeout(() => {
+      btn.textContent = original;
+      btn.disabled = false;
+    }, 2000);
   }
 }
 
@@ -127,6 +187,8 @@ async function renderPods(container, kind, name) {
   }
 }
 
+// ---------- log tabs ----------
+
 function wsURL(pod, container, opts) {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const params = new URLSearchParams({
@@ -153,39 +215,78 @@ function downloadURL(pod, container, opts) {
   return `/api/logs/download?${params.toString()}`;
 }
 
+function setActiveTab(id) {
+  activeTabId = id;
+  for (const [tid, t] of tabs) {
+    const active = tid === id;
+    t.tabItemEl.classList.toggle("active", active);
+    t.tabEl.classList.toggle("active", active);
+  }
+}
+
+function closeTab(id) {
+  const t = tabs.get(id);
+  if (!t) return;
+  if (t.ws) t.ws.close();
+  t.tabItemEl.remove();
+  t.tabEl.remove();
+  tabs.delete(id);
+
+  if (activeTabId === id) {
+    const remaining = [...tabs.keys()];
+    if (remaining.length) setActiveTab(remaining[remaining.length - 1]);
+    else activeTabId = null;
+  }
+}
+
+closeAllBtn.addEventListener("click", () => {
+  for (const id of [...tabs.keys()]) closeTab(id);
+});
+
 function openLogTab(pod, container) {
   const id = `tab-${++tabSeq}`;
   const title = `${pod}${container ? " / " + container : ""}`;
 
-  const tabBtn = document.createElement("button");
-  tabBtn.className = "tab-btn";
-  tabBtn.textContent = title;
-  tabBar.appendChild(tabBtn);
+  const tabItemEl = document.createElement("div");
+  tabItemEl.className = "tab-item";
+
+  const tabSelectBtn = document.createElement("button");
+  tabSelectBtn.className = "tab-select-btn";
+  tabSelectBtn.textContent = title;
+  tabSelectBtn.title = title;
+
+  const tabCloseBtn = document.createElement("button");
+  tabCloseBtn.className = "tab-close-btn";
+  tabCloseBtn.textContent = "×";
+  tabCloseBtn.title = "Close tab";
+
+  tabItemEl.appendChild(tabSelectBtn);
+  tabItemEl.appendChild(tabCloseBtn);
+  tabBar.appendChild(tabItemEl);
 
   const frag = logTabTemplate.content.cloneNode(true);
-  const el = frag.querySelector(".log-tab");
   const view = frag.querySelector(".log-view");
   const status = frag.querySelector(".log-status");
   const tailInput = frag.querySelector(".tail-lines");
   const prevToggle = frag.querySelector(".previous-toggle");
   const autoscrollBtn = frag.querySelector(".autoscroll-toggle");
+  const wordwrapBtn = frag.querySelector(".wordwrap-toggle");
+  const fullscreenBtn = frag.querySelector(".fullscreen-toggle");
   const clearBtn = frag.querySelector(".clear-btn");
   const downloadBtn = frag.querySelector(".download-btn");
-  const closeBtn = frag.querySelector(".close-btn");
 
   frag.querySelector(".log-title").textContent = title;
   tabContent.appendChild(frag);
   const tabEl = tabContent.lastElementChild;
 
-  const state = { autoscroll: true };
+  const state = {
+    ws: null,
+    autoscroll: true,
+    wordwrap: true,
+    tabItemEl,
+    tabEl,
+  };
   tabs.set(id, state);
-
-  function setActive() {
-    for (const b of tabBar.children) b.classList.remove("active");
-    for (const t of tabContent.children) t.classList.remove("active");
-    tabBtn.classList.add("active");
-    tabEl.classList.add("active");
-  }
 
   function connect() {
     if (state.ws) state.ws.close();
@@ -212,19 +313,38 @@ function openLogTab(pod, container) {
     };
   }
 
-  tabBtn.addEventListener("click", setActive);
+  tabSelectBtn.addEventListener("click", () => setActiveTab(id));
+  tabCloseBtn.addEventListener("click", () => closeTab(id));
   status.addEventListener("click", () => {
     if (!state.ws || state.ws.readyState === WebSocket.CLOSED) connect();
   });
   prevToggle.addEventListener("change", connect);
   tailInput.addEventListener("change", connect);
+
   autoscrollBtn.addEventListener("click", () => {
     state.autoscroll = !state.autoscroll;
     autoscrollBtn.textContent = `autoscroll: ${state.autoscroll ? "on" : "off"}`;
+    if (state.autoscroll) view.scrollTop = view.scrollHeight;
   });
+
+  wordwrapBtn.addEventListener("click", () => {
+    state.wordwrap = !state.wordwrap;
+    view.classList.toggle("nowrap", !state.wordwrap);
+    wordwrapBtn.textContent = `wrap: ${state.wordwrap ? "on" : "off"}`;
+  });
+
+  fullscreenBtn.addEventListener("click", () => {
+    if (document.fullscreenElement === tabEl) {
+      document.exitFullscreen();
+    } else {
+      tabEl.requestFullscreen?.();
+    }
+  });
+
   clearBtn.addEventListener("click", () => {
     view.textContent = "";
   });
+
   downloadBtn.addEventListener("click", () => {
     const opts = {
       previous: prevToggle.checked,
@@ -232,17 +352,39 @@ function openLogTab(pod, container) {
     };
     window.open(downloadURL(pod, container, opts), "_blank");
   });
-  closeBtn.addEventListener("click", () => {
-    if (state.ws) state.ws.close();
-    tabBtn.remove();
-    tabEl.remove();
-    tabs.delete(id);
-    if (tabBar.firstElementChild) tabBar.firstElementChild.click();
-  });
 
-  setActive();
+  setActiveTab(id);
   connect();
 }
+
+// ---------- keyboard shortcuts ----------
+
+document.addEventListener("keydown", (e) => {
+  if (!activeTabId) return;
+  const tag = (e.target.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "select" || tag === "textarea") return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+  const t = tabs.get(activeTabId);
+  if (!t) return;
+
+  switch (e.key.toLowerCase()) {
+    case "a":
+      t.tabEl.querySelector(".autoscroll-toggle").click();
+      e.preventDefault();
+      break;
+    case "w":
+      t.tabEl.querySelector(".wordwrap-toggle").click();
+      e.preventDefault();
+      break;
+    case "f":
+      t.tabEl.querySelector(".fullscreen-toggle").click();
+      e.preventDefault();
+      break;
+  }
+});
+
+// ---------- init ----------
 
 contextSelect.addEventListener("change", async () => {
   await loadNamespaces();
@@ -256,6 +398,6 @@ namespaceSelect.addEventListener("change", loadWorkloads);
     await loadNamespaces();
     await loadWorkloads();
   } catch (err) {
-    workloadsBody.innerHTML = `<tr><td colspan="3">error: ${err.message}</td></tr>`;
+    workloadsBody.innerHTML = `<tr><td colspan="4">error: ${err.message}</td></tr>`;
   }
 })();
