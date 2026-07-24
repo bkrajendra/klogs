@@ -2,17 +2,19 @@
 
 const contextSelect = document.getElementById("context-select");
 const namespaceSelect = document.getElementById("namespace-select");
-const workloadsBody = document.querySelector("#workloads-table tbody");
+const workloadSelect = document.getElementById("workload-select");
+const podSelect = document.getElementById("pod-select");
+const containerLabel = document.getElementById("container-label");
+const containerSelect = document.getElementById("container-select");
 const tabBar = document.getElementById("tab-bar");
 const tabContent = document.getElementById("tab-content");
 const closeAllBtn = document.getElementById("close-all-tabs");
 const themeToggleBtn = document.getElementById("theme-toggle");
-const workloadRowTemplate = document.getElementById("workload-row-template");
 const logTabTemplate = document.getElementById("log-tab-template");
 
 let tabSeq = 0;
 let activeTabId = null;
-let selectedRow = null;
+let podsByName = new Map(); // pod name -> { phase, containers }
 const tabs = new Map(); // id -> tab state
 
 // ---------- theme ----------
@@ -53,6 +55,14 @@ function currentNamespace() {
   return namespaceSelect.value;
 }
 
+function resetSelect(select, placeholder) {
+  select.innerHTML = "";
+  const opt = document.createElement("option");
+  opt.value = "";
+  opt.textContent = placeholder;
+  select.appendChild(opt);
+}
+
 async function loadContexts() {
   const contexts = await fetchJSON("/api/contexts");
   contextSelect.innerHTML = "";
@@ -82,137 +92,125 @@ async function loadNamespaces() {
 }
 
 async function loadWorkloads() {
-  workloadsBody.innerHTML = "";
-  selectedRow = null;
+  resetSelect(workloadSelect, "-- select --");
+  resetSelect(podSelect, "-- select --");
+  containerLabel.hidden = true;
+  podsByName.clear();
   if (!currentNamespace()) return;
 
   const workloads = await fetchJSON(
     `/api/workloads?context=${encodeURIComponent(currentContext())}&namespace=${encodeURIComponent(currentNamespace())}`
   );
-
   for (const w of workloads) {
-    const frag = workloadRowTemplate.content.cloneNode(true);
-    const row = frag.querySelector(".workload-row");
-    const podsRow = frag.querySelector(".pods-row");
-    const podsList = frag.querySelector(".pods-list");
-    const restartBtn = frag.querySelector(".restart-btn");
-
-    frag.querySelector(".w-kind").textContent = w.kind;
-    frag.querySelector(".w-name").textContent = w.name;
-    frag.querySelector(".w-ready").textContent =
-      w.kind === "deployment" ? `${w.ready}/${w.desired}` : "-";
-
-    let loaded = false;
-    row.addEventListener("click", async () => {
-      if (selectedRow && selectedRow !== row) selectedRow.classList.remove("selected");
-      row.classList.add("selected");
-      selectedRow = row;
-
-      const willShow = podsRow.hidden;
-      podsRow.hidden = !willShow;
-      if (willShow && !loaded) {
-        loaded = true;
-        try {
-          await renderPods(podsList, w.kind, w.name);
-        } catch (err) {
-          podsList.textContent = `error: ${err.message}`;
-        }
-      }
-    });
-
-    restartBtn.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      restartWorkload(restartBtn, w.kind, w.name);
-    });
-
-    workloadsBody.appendChild(row);
-    workloadsBody.appendChild(podsRow);
+    const opt = document.createElement("option");
+    opt.value = `${w.kind}:${w.name}`;
+    opt.textContent = `[${w.kind}] ${w.name}`;
+    workloadSelect.appendChild(opt);
   }
 }
 
-async function restartWorkload(btn, kind, name) {
-  if (!confirm(`Restart ${kind} "${name}"? This will restart its pods.`)) return;
+async function loadPods() {
+  resetSelect(podSelect, "-- select --");
+  containerLabel.hidden = true;
+  podsByName.clear();
 
-  const original = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = "restarting...";
-  try {
-    await fetchJSON(
-      `/api/workloads/${encodeURIComponent(kind)}/${encodeURIComponent(name)}/restart` +
-        `?context=${encodeURIComponent(currentContext())}&namespace=${encodeURIComponent(currentNamespace())}`,
-      { method: "POST" }
-    );
-    btn.textContent = "restarted!";
-  } catch (err) {
-    btn.textContent = "failed";
-    alert(`Restart failed: ${err.message}`);
-  } finally {
-    setTimeout(() => {
-      btn.textContent = original;
-      btn.disabled = false;
-    }, 2000);
-  }
-}
+  const val = workloadSelect.value;
+  if (!val) return;
+  const [kind, name] = val.split(":");
 
-async function renderPods(container, kind, name) {
   const pods = await fetchJSON(
     `/api/workloads/${encodeURIComponent(kind)}/${encodeURIComponent(name)}/pods` +
       `?context=${encodeURIComponent(currentContext())}&namespace=${encodeURIComponent(currentNamespace())}`
   );
+  for (const p of pods) {
+    podsByName.set(p.name, p);
+    const opt = document.createElement("option");
+    opt.value = p.name;
+    opt.textContent = `${p.name} (${p.phase})`;
+    podSelect.appendChild(opt);
+  }
+}
 
-  container.innerHTML = "";
-  if (pods.length === 0) {
-    container.textContent = "no pods";
+function currentSelection(container) {
+  const val = workloadSelect.value;
+  if (!val) return null;
+  const [kind, name] = val.split(":");
+  const pod = podSelect.value;
+  if (!pod) return null;
+  return {
+    context: currentContext(),
+    namespace: currentNamespace(),
+    kind,
+    name,
+    pod,
+    container,
+  };
+}
+
+function onPodSelected() {
+  containerSelect.innerHTML = "";
+  const podName = podSelect.value;
+  if (!podName) {
+    containerLabel.hidden = true;
     return;
   }
 
-  for (const pod of pods) {
-    const entry = document.createElement("div");
-    entry.className = "pod-entry";
+  const pod = podsByName.get(podName);
+  const containers = pod?.containers || [];
 
-    const podName = document.createElement("span");
-    podName.className = "pod-name";
-    podName.textContent = `${pod.name} (${pod.phase})`;
-    entry.appendChild(podName);
-
-    for (const c of pod.containers) {
-      const btn = document.createElement("button");
-      btn.className = "container-btn";
-      btn.textContent = pod.containers.length > 1 ? c : "logs";
-      btn.addEventListener("click", () => openLogTab(pod.name, c));
-      entry.appendChild(btn);
+  if (containers.length > 1) {
+    containerLabel.hidden = false;
+    for (const c of containers) {
+      const opt = document.createElement("option");
+      opt.value = c;
+      opt.textContent = c;
+      containerSelect.appendChild(opt);
     }
-
-    container.appendChild(entry);
+    containerSelect.value = containers[0];
+  } else {
+    containerLabel.hidden = true;
   }
+
+  const sel = currentSelection(containers[0] || "");
+  if (sel) openLogTab(sel);
 }
+
+containerSelect.addEventListener("change", () => {
+  const sel = currentSelection(containerSelect.value);
+  if (sel) openLogTab(sel);
+});
 
 // ---------- log tabs ----------
 
-function wsURL(pod, container, opts) {
+function wsURL(sel) {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const params = new URLSearchParams({
-    context: currentContext(),
-    namespace: currentNamespace(),
-    pod,
-    container,
+    context: sel.context,
+    namespace: sel.namespace,
+    pod: sel.pod,
+    container: sel.container,
     follow: "true",
   });
-  if (opts.previous) params.set("previous", "true");
-  if (opts.tailLines) params.set("tailLines", String(opts.tailLines));
+  if (sel.previous) params.set("previous", "true");
+  if (sel.tailLines) params.set("tailLines", String(sel.tailLines));
   return `${proto}//${location.host}/ws/logs?${params.toString()}`;
 }
 
-function downloadURL(pod, container, opts) {
+function downloadURL(sel) {
   const params = new URLSearchParams({
-    context: currentContext(),
-    namespace: currentNamespace(),
-    pod,
-    container,
+    context: sel.context,
+    namespace: sel.namespace,
+    pod: sel.pod,
+    container: sel.container,
   });
-  if (opts.previous) params.set("previous", "true");
-  if (opts.tailLines) params.set("tailLines", String(opts.tailLines));
+  if (sel.previous) params.set("previous", "true");
+  if (sel.tailLines) params.set("tailLines", String(sel.tailLines));
   return `/api/logs/download?${params.toString()}`;
+}
+
+function restartURL(sel) {
+  const params = new URLSearchParams({ context: sel.context, namespace: sel.namespace });
+  return `/api/workloads/${encodeURIComponent(sel.kind)}/${encodeURIComponent(sel.name)}/restart?${params.toString()}`;
 }
 
 function setActiveTab(id) {
@@ -243,9 +241,9 @@ closeAllBtn.addEventListener("click", () => {
   for (const id of [...tabs.keys()]) closeTab(id);
 });
 
-function openLogTab(pod, container) {
+function openLogTab(sel) {
   const id = `tab-${++tabSeq}`;
-  const title = `${pod}${container ? " / " + container : ""}`;
+  const title = `${sel.pod}${sel.container ? " / " + sel.container : ""}`;
 
   const tabItemEl = document.createElement("div");
   tabItemEl.className = "tab-item";
@@ -274,6 +272,7 @@ function openLogTab(pod, container) {
   const fullscreenBtn = frag.querySelector(".fullscreen-toggle");
   const clearBtn = frag.querySelector(".clear-btn");
   const downloadBtn = frag.querySelector(".download-btn");
+  const restartBtn = frag.querySelector(".restart-btn");
 
   frag.querySelector(".log-title").textContent = title;
   tabContent.appendChild(frag);
@@ -285,17 +284,15 @@ function openLogTab(pod, container) {
     wordwrap: true,
     tabItemEl,
     tabEl,
+    sel,
   };
   tabs.set(id, state);
 
   function connect() {
     if (state.ws) state.ws.close();
-    const opts = {
-      previous: prevToggle.checked,
-      tailLines: tailInput.value ? Number(tailInput.value) : undefined,
-    };
+    const opts = { ...sel, previous: prevToggle.checked, tailLines: tailInput.value ? Number(tailInput.value) : undefined };
     status.textContent = "connecting...";
-    const ws = new WebSocket(wsURL(pod, container, opts));
+    const ws = new WebSocket(wsURL(opts));
     state.ws = ws;
 
     ws.onopen = () => {
@@ -346,15 +343,34 @@ function openLogTab(pod, container) {
   });
 
   downloadBtn.addEventListener("click", () => {
-    const opts = {
-      previous: prevToggle.checked,
-      tailLines: tailInput.value ? Number(tailInput.value) : undefined,
-    };
-    window.open(downloadURL(pod, container, opts), "_blank");
+    const opts = { ...sel, previous: prevToggle.checked, tailLines: tailInput.value ? Number(tailInput.value) : undefined };
+    window.open(downloadURL(opts), "_blank");
   });
+
+  restartBtn.addEventListener("click", () => restartWorkload(restartBtn, sel));
 
   setActiveTab(id);
   connect();
+}
+
+async function restartWorkload(btn, sel) {
+  if (!confirm(`Restart ${sel.kind} "${sel.name}"? This will restart its pods.`)) return;
+
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "restarting...";
+  try {
+    await fetchJSON(restartURL(sel), { method: "POST" });
+    btn.textContent = "restarted!";
+  } catch (err) {
+    btn.textContent = "failed";
+    alert(`Restart failed: ${err.message}`);
+  } finally {
+    setTimeout(() => {
+      btn.textContent = original;
+      btn.disabled = false;
+    }, 2000);
+  }
 }
 
 // ---------- keyboard shortcuts ----------
@@ -381,6 +397,10 @@ document.addEventListener("keydown", (e) => {
       t.tabEl.querySelector(".fullscreen-toggle").click();
       e.preventDefault();
       break;
+    case "r":
+      t.tabEl.querySelector(".restart-btn").click();
+      e.preventDefault();
+      break;
   }
 });
 
@@ -391,6 +411,8 @@ contextSelect.addEventListener("change", async () => {
   await loadWorkloads();
 });
 namespaceSelect.addEventListener("change", loadWorkloads);
+workloadSelect.addEventListener("change", loadPods);
+podSelect.addEventListener("change", onPodSelected);
 
 (async function init() {
   try {
@@ -398,6 +420,6 @@ namespaceSelect.addEventListener("change", loadWorkloads);
     await loadNamespaces();
     await loadWorkloads();
   } catch (err) {
-    workloadsBody.innerHTML = `<tr><td colspan="4">error: ${err.message}</td></tr>`;
+    resetSelect(workloadSelect, `error: ${err.message}`);
   }
 })();

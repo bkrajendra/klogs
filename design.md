@@ -136,24 +136,30 @@ Everything else in the API stays read-only (`list`/`get`/`get log`).
 
 Layout, top to bottom:
 
-1. **Header**: context selector, namespace selector, and a light/dark theme
-   toggle (persisted in `localStorage`, defaults to the OS preference).
-2. **Workload list** (table: kind, name, ready/available pods, restart
-   button) — click a row to expand its pod list; the selected row stays
-   visually highlighted. Restart asks for confirmation before calling the
-   restart endpoint.
-3. **Pod/container picker** — clicking a workload row expands to show its
-   pods; clicking a pod shows its containers if more than one. The "open
-   logs" button uses the accent color so it reads clearly against the row.
-4. **Log viewer tabs**: opens on pod+container click, one tab per
-   pod/container, each with its own WebSocket connection.
+1. **Top filter bar**: a cascading chain of dropdowns — context → namespace
+   → workload (Deployment/Service, combined in one list) → pod → container
+   (only shown when the pod has more than one container) — plus a
+   light/dark theme toggle (persisted in `localStorage`, defaults to the OS
+   preference). Each select repopulates/resets the ones after it when
+   changed.
+2. **Auto-opening logs**: picking a pod (or, for multi-container pods,
+   picking/confirming a container) immediately opens a new log tab for it —
+   there's no separate "open logs" button. Picking a different container
+   for the same pod opens another tab, so multiple containers/pods can be
+   compared side by side.
+3. **Log viewer tabs**: one per pod/container, each with its own WebSocket
+   connection, each snapshotting the context/namespace/workload/pod/
+   container it was opened with (so it stays correct even if the filter bar
+   selection changes afterward).
    - The tab strip shows each tab's title with its own close (×) button on
      the tab itself, plus a "close all" button for the whole strip.
-   - Toolbar per tab: tail-lines input, "previous container logs" toggle,
-     autoscroll on/off, word-wrap on/off, full screen, clear, download.
+   - Toolbar per tab, in order: tail-lines input, "previous container logs"
+     toggle, autoscroll on/off, word-wrap on/off, full screen, clear,
+     download, **restart** (restarts the Deployment/Service this tab's pod
+     belongs to, behind a confirmation prompt).
    - Keyboard shortcuts (active tab, not while typing in a field): `a`
-     toggles autoscroll, `w` toggles word wrap, `f` toggles full screen for
-     that tab.
+     autoscroll, `w` word wrap, `f` full screen, `r` restart (still
+     confirms before acting).
 
 No frontend framework, no build tooling — plain HTML/CSS/JS served from
 `web/static/` and embedded with `go:embed` at compile time.
@@ -179,10 +185,14 @@ klogs/
 │       ├── index.html
 │       ├── app.js
 │       └── style.css
+├── docs/
+│   └── screenshot.png       # README screenshot
 ├── .github/workflows/
 │   ├── ci.yml                # build+vet+test on PR/push
 │   └── release.yml           # auto-semver tag + goreleaser on push to main
 ├── .goreleaser.yaml
+├── install.sh                # curl | bash installer (macOS/Linux/Git-Bash/WSL)
+├── install.ps1                # native Windows PowerShell installer
 ├── go.mod
 ├── go.sum
 ├── design.md
@@ -276,6 +286,30 @@ in `.goreleaser.yaml`, so it always reports the exact tag it was built from.
 
 Every push to `main` therefore produces a new tagged release automatically;
 no manual tagging or build step is required.
+
+## Distribution
+
+Two installer scripts at the repo root, meant to be run via
+`curl ... | bash` / `irm ... | iex` straight from `raw.githubusercontent.com`
+(no separate package-manager tap/bucket to maintain):
+
+- `install.sh` — macOS, Linux, and Windows under Git Bash/WSL/MSYS. Detects
+  OS/arch via `uname`, resolves the latest release tag from the GitHub API
+  (or honors `KLOGS_VERSION` to pin one), downloads the matching archive
+  and `checksums.txt`, verifies the SHA-256 checksum, extracts the binary,
+  and installs it to `/usr/local/bin` (if writable) or `~/.local/bin`
+  (override with `KLOGS_INSTALL_DIR`). Never uses `sudo` — if neither
+  target is writable/on `PATH`, it prints the `export PATH=...` line to
+  add.
+- `install.ps1` — native Windows PowerShell equivalent: same
+  download/verify/extract flow, installs to
+  `%LOCALAPPDATA%\Programs\klogs` (override with `KLOGS_INSTALL_DIR`), and
+  appends that directory to the user's `PATH` via
+  `[Environment]::SetEnvironmentVariable(..., "User")`.
+
+Both scripts are read-only with respect to the system beyond writing the
+one binary and (on Windows) one user-scope PATH entry — no admin/sudo
+elevation, no package manager registration.
 
 ## Security notes
 
