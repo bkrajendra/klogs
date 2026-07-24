@@ -29,7 +29,15 @@ go build -o klogs ./cmd/klogs
 
 ## Releases
 
-Tagged pushes (`vX.Y.Z`) trigger a GitHub Actions release that builds
-linux/darwin/windows amd64/arm64 binaries via GoReleaser and attaches them
-to the GitHub Release. See `.github/workflows/release.yml` and
-`.goreleaser.yaml`.
+Every push to `main` automatically cuts a new release: the workflow bumps
+the patch version from the latest `vX.Y.Z` tag (starting at `v0.1.0`),
+pushes the new tag, and runs GoReleaser to build linux/darwin/windows
+amd64/arm64 binaries and attach them to a GitHub Release.
+
+- Put `[minor]` or `[major]` in a commit message to bump that field
+  instead of patch.
+- Put `[skip release]` in a commit message to skip releasing for that
+  push.
+- Pushing a `vX.Y.Z` tag yourself releases exactly that tag, no bump.
+
+See `.github/workflows/release.yml` and `.goreleaser.yaml`.

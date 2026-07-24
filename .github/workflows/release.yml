@@ -1,20 +1,60 @@
 name: Release
 
+# Two ways to cut a release:
+#  - push to main: auto-bumps the patch version (v0.1.0 -> v0.1.1 -> ...)
+#    and releases it. Put "[minor]" or "[major]" in the commit message to
+#    bump that field instead, or "[skip release]" to skip entirely.
+#  - push a "vX.Y.Z" tag yourself: releases exactly that tag, no bump.
 on:
   push:
+    branches: [main]
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  goreleaser:
+  release:
     runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip release]')"
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Fetch tags
+        run: git fetch --tags origin
+
+      # Only runs when triggered by a branch push (not by pushing a tag
+      # directly, and not for workflow_dispatch on an already-tagged ref).
+      - name: Compute and push next semver tag
+        if: startsWith(github.ref, 'refs/heads/')
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+          if [[ -z "$latest" ]]; then
+            new_tag="v0.1.0"
+          else
+            IFS='.' read -r major minor patch <<< "${latest#v}"
+            msg=$(git log -1 --pretty=%B)
+            if [[ "$msg" == *"[major]"* ]]; then
+              major=$((major + 1)); minor=0; patch=0
+            elif [[ "$msg" == *"[minor]"* ]]; then
+              minor=$((minor + 1)); patch=0
+            else
+              patch=$((patch + 1))
+            fi
+            new_tag="v${major}.${minor}.${patch}"
+          fi
+
+          echo "Tagging $new_tag"
+          git tag -a "$new_tag" -m "Release $new_tag"
+          git push origin "$new_tag"
 
       - uses: actions/setup-go@v5
         with:

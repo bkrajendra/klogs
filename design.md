@@ -148,7 +148,7 @@ klogs/
 │       └── style.css
 ├── .github/workflows/
 │   ├── ci.yml                # build+vet+test on PR/push
-│   └── release.yml           # goreleaser on tag push
+│   └── release.yml           # auto-semver tag + goreleaser on push to main
 ├── .goreleaser.yaml
 ├── go.mod
 ├── go.sum
@@ -191,9 +191,20 @@ Two workflows:
 - `go test ./...`
 - (optional) `golangci-lint run`
 
-### `release.yml` — on `v*` tag push
-- Uses [GoReleaser](https://goreleaser.com/) to cross-compile and publish a
-  GitHub Release with binaries attached.
+### `release.yml` — automatic semver release on every push to `main`
+- Computes the next version by reading the latest `vX.Y.Z` git tag and
+  bumping it: **patch** by default, or **minor**/**major** if the
+  triggering commit message contains `[minor]`/`[major]`. If no tag exists
+  yet, it starts at `v0.1.0`. A commit message containing `[skip release]`
+  skips the job entirely.
+- Creates and pushes that tag, then runs
+  [GoReleaser](https://goreleaser.com/) to cross-compile and publish a
+  GitHub Release with binaries attached — all in the same workflow run (so
+  it isn't relying on the tag push re-triggering a second workflow, which
+  the default `GITHUB_TOKEN` can't do).
+- Also triggers on a manually pushed `v*` tag (skipping the auto-bump
+  step) and on manual `workflow_dispatch`, for cutting an out-of-band
+  release.
 
 `.goreleaser.yaml` targets:
 
@@ -223,8 +234,11 @@ Resulting release artifacts per tag (e.g. `v0.1.0`):
 - `klogs_windows_amd64.zip`, `klogs_windows_arm64.zip`
 - `checksums.txt`
 
-Tagging `v0.1.0` and pushing the tag is what triggers `release.yml`; no
-manual build step required.
+The binary's `--version` output is set via `-ldflags -X main.version={{.Version}}`
+in `.goreleaser.yaml`, so it always reports the exact tag it was built from.
+
+Every push to `main` therefore produces a new tagged release automatically;
+no manual tagging or build step is required.
 
 ## Security notes
 
