@@ -78,37 +78,28 @@ klogs update [--version vX.Y.Z]   # download, verify, and install a release in p
 
 ## Features
 
-- Splash screen on load with the version, an update-available indicator,
-  keyboard shortcuts, and a "Get started" dismiss (or just press any
-  key/click outside/wait a few seconds) — click the header logo any time
-  to bring it back.
-- In-app updates: a green version badge (next to the theme toggle) flags
-  when a newer release is out; click it to download, verify, and install
-  in place, then restart with one more click. Skipping only silences it
-  for the rest of that session — the badge keeps tracking it either way.
-- Top filter bar: context → namespace → workload (`[d]`eployment/`[s]`ervice)
-  → pod → container. Picking a pod (or container, for multi-container pods)
-  opens its logs immediately — no extra click needed. Context and
-  namespace are remembered across restarts (`localStorage`).
-- Tabs start at the tail of the log (last 1000 lines by default, not the
-  whole history) and stream forward from there; scroll up any time to read
-  further back. **Show last** (100/1000/2000/4000/All) controls both how
-  far back a (re)connect starts and how many lines stay buffered in the
-  browser during a long-running session; **now** jumps to the current
-  moment, skipping history entirely (like `--tail=0`). None of this
-  affects **download** — it always fetches the complete log fresh from the
-  server.
-- Multi-tab live log streaming (WebSocket) with autoscroll (auto-pauses if
-  you scroll up, resumes at the bottom), word-wrap, and full-screen
-  toggles — each with a keyboard shortcut (`a`/`w`/`f`) while a tab is
-  active. Close a single tab from its own × or clear the whole strip with
-  "close all".
-- A "previous container" toggle for crash-looping pods.
-- Restart the Deployment (or the Deployment behind a Service) a tab's pod
-  belongs to, right from that tab's toolbar (`r` shortcut), with a
-  confirmation prompt first. Once the old pod is replaced, klogs picks up
-  the new one automatically and opens a tab for it.
-- Light/dark theme toggle, persisted locally.
+- **Cascading filter bar** — context, namespace, workload
+  (deployment/service), pod, and container selectors. Selecting a pod (or
+  a container, for multi-container pods) opens its logs immediately.
+  Context and namespace selections persist across sessions.
+- **In-app updates** — a version badge indicates when a newer release is
+  available. Updates can be applied from the UI, via the `klogs update`
+  CLI command, or by re-running the install script.
+- **Tail-first log streaming** — new tabs start at the end of the log
+  rather than loading full history. A "Show last" control (100 / 1000 /
+  2000 / 4000 / All lines) governs both the initial fetch and the
+  in-browser buffer size; "now" skips history entirely. Downloads always
+  return the complete log regardless of this setting.
+- **Multi-tab log viewer** — concurrent WebSocket streams per pod/container,
+  with autoscroll, word wrap, and full-screen toggles, each bound to a
+  keyboard shortcut (`a`/`w`/`f`) while a tab is active. Tabs can be closed
+  individually or all at once.
+- **Previous-container logs** for crash-looping pods.
+- **Workload restart** — restart the Deployment (or the Deployment behind a
+  Service) from the active tab's toolbar (`r` shortcut), with a
+  confirmation prompt. klogs detects the replacement pod once it's running
+  and opens a tab for it automatically.
+- **Light/dark theme**, persisted across sessions.
 
 ## Build from source
 
