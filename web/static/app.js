@@ -12,10 +12,49 @@ const closeAllBtn = document.getElementById("close-all-tabs");
 const themeToggleBtn = document.getElementById("theme-toggle");
 const logTabTemplate = document.getElementById("log-tab-template");
 
+const LS_THEME = "klogs-theme";
+const LS_CONTEXT = "klogs-context";
+const LS_NAMESPACE = "klogs-namespace";
+
 let tabSeq = 0;
 let activeTabId = null;
 let podsByName = new Map(); // pod name -> { phase, containers }
 const tabs = new Map(); // id -> tab state
+
+// ---------- splash screen ----------
+
+(function initSplash() {
+  const splash = document.getElementById("splash");
+  const dismissBtn = document.getElementById("splash-dismiss");
+  const versionEl = document.getElementById("splash-version");
+
+  fetch("/api/version")
+    .then((r) => r.json())
+    .then((v) => {
+      versionEl.textContent = `v${v.version || "dev"}`;
+    })
+    .catch(() => {
+      versionEl.textContent = "";
+    });
+
+  let dismissed = false;
+  function dismiss() {
+    if (dismissed) return;
+    dismissed = true;
+    splash.classList.add("hidden");
+    setTimeout(() => splash.remove(), 250);
+  }
+
+  dismissBtn.addEventListener("click", dismiss);
+  splash.addEventListener("click", (e) => {
+    if (e.target === splash) dismiss();
+  });
+  document.addEventListener("keydown", function onFirstKey() {
+    document.removeEventListener("keydown", onFirstKey);
+    dismiss();
+  });
+  setTimeout(dismiss, 6000);
+})();
 
 // ---------- theme ----------
 
@@ -26,13 +65,13 @@ function applyTheme(theme) {
 }
 
 let currentTheme =
-  localStorage.getItem("klogs-theme") ||
+  localStorage.getItem(LS_THEME) ||
   (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
 applyTheme(currentTheme);
 
 themeToggleBtn.addEventListener("click", () => {
   currentTheme = currentTheme === "dark" ? "light" : "dark";
-  localStorage.setItem("klogs-theme", currentTheme);
+  localStorage.setItem(LS_THEME, currentTheme);
   applyTheme(currentTheme);
 });
 
@@ -73,6 +112,10 @@ async function loadContexts() {
     if (c.current) opt.selected = true;
     contextSelect.appendChild(opt);
   }
+  const saved = localStorage.getItem(LS_CONTEXT);
+  if (saved && contexts.some((c) => c.name === saved)) {
+    contextSelect.value = saved;
+  }
 }
 
 async function loadNamespaces() {
@@ -86,9 +129,16 @@ async function loadNamespaces() {
     opt.textContent = ns.name;
     namespaceSelect.appendChild(opt);
   }
-  if (namespaces.some((ns) => ns.name === "default")) {
+  const saved = localStorage.getItem(LS_NAMESPACE);
+  if (saved && namespaces.some((ns) => ns.name === saved)) {
+    namespaceSelect.value = saved;
+  } else if (namespaces.some((ns) => ns.name === "default")) {
     namespaceSelect.value = "default";
   }
+}
+
+function workloadLabel(kind) {
+  return kind === "deployment" ? "d" : "s";
 }
 
 async function loadWorkloads() {
@@ -104,7 +154,7 @@ async function loadWorkloads() {
   for (const w of workloads) {
     const opt = document.createElement("option");
     opt.value = `${w.kind}:${w.name}`;
-    opt.textContent = `[${w.kind}] ${w.name}`;
+    opt.textContent = `[${workloadLabel(w.kind)}] ${w.name}`;
     workloadSelect.appendChild(opt);
   }
 }
@@ -192,10 +242,13 @@ function wsURL(sel) {
     follow: "true",
   });
   if (sel.previous) params.set("previous", "true");
-  if (sel.tailLines) params.set("tailLines", String(sel.tailLines));
+  if (sel.tailLines !== undefined) params.set("tailLines", String(sel.tailLines));
   return `${proto}//${location.host}/ws/logs?${params.toString()}`;
 }
 
+// Always downloads the complete available log, regardless of the tab's
+// "show last N" display cap - the cap is a client-side memory/performance
+// setting, not a data limit.
 function downloadURL(sel) {
   const params = new URLSearchParams({
     context: sel.context,
@@ -204,13 +257,17 @@ function downloadURL(sel) {
     container: sel.container,
   });
   if (sel.previous) params.set("previous", "true");
-  if (sel.tailLines) params.set("tailLines", String(sel.tailLines));
   return `/api/logs/download?${params.toString()}`;
 }
 
 function restartURL(sel) {
   const params = new URLSearchParams({ context: sel.context, namespace: sel.namespace });
   return `/api/workloads/${encodeURIComponent(sel.kind)}/${encodeURIComponent(sel.name)}/restart?${params.toString()}`;
+}
+
+function podsURL(sel) {
+  const params = new URLSearchParams({ context: sel.context, namespace: sel.namespace });
+  return `/api/workloads/${encodeURIComponent(sel.kind)}/${encodeURIComponent(sel.name)}/pods?${params.toString()}`;
 }
 
 function setActiveTab(id) {
@@ -265,7 +322,8 @@ function openLogTab(sel) {
   const frag = logTabTemplate.content.cloneNode(true);
   const view = frag.querySelector(".log-view");
   const status = frag.querySelector(".log-status");
-  const tailInput = frag.querySelector(".tail-lines");
+  const maxLinesSelect = frag.querySelector(".max-lines");
+  const nowBtn = frag.querySelector(".now-btn");
   const prevToggle = frag.querySelector(".previous-toggle");
   const autoscrollBtn = frag.querySelector(".autoscroll-toggle");
   const wordwrapBtn = frag.querySelector(".wordwrap-toggle");
@@ -282,15 +340,47 @@ function openLogTab(sel) {
     ws: null,
     autoscroll: true,
     wordwrap: true,
+    maxLines: 1000,
+    lineNodes: [],
     tabItemEl,
     tabEl,
     sel,
   };
   tabs.set(id, state);
 
-  function connect() {
+  function clearView() {
+    view.textContent = "";
+    state.lineNodes = [];
+  }
+
+  // Appending a text node + trimming old ones from the front keeps each
+  // update O(1)-ish regardless of how long the tab has been streaming -
+  // using `view.textContent += line` here would re-serialize the entire
+  // buffer on every single line and grind the tab to a halt after a while.
+  function appendLine(text) {
+    const node = document.createTextNode(text + "\n");
+    view.appendChild(node);
+    state.lineNodes.push(node);
+    if (state.maxLines > 0 && state.lineNodes.length > state.maxLines) {
+      const excess = state.lineNodes.length - state.maxLines;
+      for (let i = 0; i < excess; i++) {
+        view.removeChild(state.lineNodes.shift());
+      }
+    }
+  }
+
+  // connect() reconnects the WebSocket. forceTailLines overrides the
+  // "show last" setting for just this one connection (used by the "now"
+  // button) without changing the dropdown itself.
+  function connect(forceTailLines) {
     if (state.ws) state.ws.close();
-    const opts = { ...sel, previous: prevToggle.checked, tailLines: tailInput.value ? Number(tailInput.value) : undefined };
+    clearView();
+
+    const raw = maxLinesSelect.value;
+    state.maxLines = raw === "all" ? 0 : Number(raw);
+    const tailLines = forceTailLines !== undefined ? forceTailLines : state.maxLines > 0 ? state.maxLines : undefined;
+
+    const opts = { ...sel, previous: prevToggle.checked, tailLines };
     status.textContent = "connecting...";
     const ws = new WebSocket(wsURL(opts));
     state.ws = ws;
@@ -299,7 +389,7 @@ function openLogTab(sel) {
       status.textContent = "streaming";
     };
     ws.onmessage = (ev) => {
-      view.textContent += ev.data + "\n";
+      appendLine(ev.data);
       if (state.autoscroll) view.scrollTop = view.scrollHeight;
     };
     ws.onclose = () => {
@@ -315,13 +405,24 @@ function openLogTab(sel) {
   status.addEventListener("click", () => {
     if (!state.ws || state.ws.readyState === WebSocket.CLOSED) connect();
   });
-  prevToggle.addEventListener("change", connect);
-  tailInput.addEventListener("change", connect);
+  prevToggle.addEventListener("change", () => connect());
+  maxLinesSelect.addEventListener("change", () => connect());
+  nowBtn.addEventListener("click", () => connect(0));
 
   autoscrollBtn.addEventListener("click", () => {
     state.autoscroll = !state.autoscroll;
     autoscrollBtn.textContent = `autoscroll: ${state.autoscroll ? "on" : "off"}`;
     if (state.autoscroll) view.scrollTop = view.scrollHeight;
+  });
+
+  // Scrolling away from the bottom pauses autoscroll so reading history
+  // isn't interrupted by new lines; scrolling back to the bottom resumes it.
+  view.addEventListener("scroll", () => {
+    const nearBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 40;
+    if (nearBottom !== state.autoscroll) {
+      state.autoscroll = nearBottom;
+      autoscrollBtn.textContent = `autoscroll: ${state.autoscroll ? "on" : "off"}`;
+    }
   });
 
   wordwrapBtn.addEventListener("click", () => {
@@ -338,12 +439,10 @@ function openLogTab(sel) {
     }
   });
 
-  clearBtn.addEventListener("click", () => {
-    view.textContent = "";
-  });
+  clearBtn.addEventListener("click", clearView);
 
   downloadBtn.addEventListener("click", () => {
-    const opts = { ...sel, previous: prevToggle.checked, tailLines: tailInput.value ? Number(tailInput.value) : undefined };
+    const opts = { ...sel, previous: prevToggle.checked };
     window.open(downloadURL(opts), "_blank");
   });
 
@@ -360,8 +459,13 @@ async function restartWorkload(btn, sel) {
   btn.disabled = true;
   btn.textContent = "restarting...";
   try {
+    const priorPods = await fetchJSON(podsURL(sel)).catch(() => []);
+    const priorNames = new Set((priorPods || []).map((p) => p.name));
+
     await fetchJSON(restartURL(sel), { method: "POST" });
     btn.textContent = "restarted!";
+
+    watchForReplacementPod(sel, priorNames);
   } catch (err) {
     btn.textContent = "failed";
     alert(`Restart failed: ${err.message}`);
@@ -370,6 +474,40 @@ async function restartWorkload(btn, sel) {
       btn.textContent = original;
       btn.disabled = false;
     }, 2000);
+  }
+}
+
+// After a restart, the old pod is eventually replaced by a new one with a
+// different name. Poll until a new, Running pod shows up, then refresh the
+// pod dropdown (if it's still pointed at this workload) and open a tab for
+// the new pod automatically.
+async function watchForReplacementPod(sel, priorNames) {
+  const attempts = 15;
+  for (let i = 0; i < attempts; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    let pods;
+    try {
+      pods = await fetchJSON(podsURL(sel));
+    } catch {
+      continue;
+    }
+
+    const fresh = pods.find((p) => !priorNames.has(p.name) && p.phase === "Running");
+    if (!fresh) continue;
+
+    if (
+      workloadSelect.value === `${sel.kind}:${sel.name}` &&
+      currentContext() === sel.context &&
+      currentNamespace() === sel.namespace
+    ) {
+      await loadPods();
+      podSelect.value = fresh.name;
+    }
+
+    const container = fresh.containers.includes(sel.container) ? sel.container : fresh.containers[0] || "";
+    openLogTab({ ...sel, pod: fresh.name, container });
+    return;
   }
 }
 
@@ -407,10 +545,14 @@ document.addEventListener("keydown", (e) => {
 // ---------- init ----------
 
 contextSelect.addEventListener("change", async () => {
+  localStorage.setItem(LS_CONTEXT, contextSelect.value);
   await loadNamespaces();
   await loadWorkloads();
 });
-namespaceSelect.addEventListener("change", loadWorkloads);
+namespaceSelect.addEventListener("change", () => {
+  localStorage.setItem(LS_NAMESPACE, namespaceSelect.value);
+  loadWorkloads();
+});
 workloadSelect.addEventListener("change", loadPods);
 podSelect.addEventListener("change", onPodSelected);
 

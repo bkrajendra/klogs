@@ -43,7 +43,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	handler, err := server.New(km, log)
+	handler, err := server.New(km, log, version)
 	if err != nil {
 		log.Error("failed to build server", "error", err)
 		os.Exit(1)

@@ -7,8 +7,64 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+
+<div id="splash" class="splash-overlay">
+  <div class="splash-card">
+    <svg class="splash-logo" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <defs>
+        <linearGradient id="splash-g" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#3b82f6"/>
+          <stop offset="1" stop-color="#1e3a8a"/>
+        </linearGradient>
+      </defs>
+      <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#splash-g)"/>
+      <rect x="14" y="19" width="36" height="5" rx="2.5" fill="#fff" opacity="0.95"/>
+      <rect x="14" y="29.5" width="28" height="5" rx="2.5" fill="#fff" opacity="0.8"/>
+      <rect x="14" y="40" width="20" height="5" rx="2.5" fill="#fff" opacity="0.6"/>
+      <rect x="38" y="40" width="6" height="5" rx="1" fill="#fff" opacity="0.95">
+        <animate attributeName="opacity" values="0.95;0.15;0.95" dur="1.1s" repeatCount="indefinite"/>
+      </rect>
+    </svg>
+
+    <h1 class="splash-title">klogs</h1>
+    <div class="splash-version" id="splash-version">&nbsp;</div>
+
+    <div class="splash-shortcuts">
+      <h2>Keyboard shortcuts</h2>
+      <ul>
+        <li><kbd>a</kbd><span>toggle autoscroll</span></li>
+        <li><kbd>w</kbd><span>toggle word wrap</span></li>
+        <li><kbd>f</kbd><span>toggle full screen</span></li>
+        <li><kbd>r</kbd><span>restart workload</span></li>
+      </ul>
+    </div>
+
+    <button id="splash-dismiss" class="splash-dismiss">Get started &rarr;</button>
+
+    <div class="splash-footer">
+      Designed by <strong>Rajendra Khope</strong> &middot;
+      <a href="https://rajendrakhope.com" target="_blank" rel="noopener noreferrer">rajendrakhope.com</a>
+    </div>
+  </div>
+</div>
+
 <header>
-  <h1>klogs</h1>
+  <h1>
+    <svg class="header-logo" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <defs>
+        <linearGradient id="header-g" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#3b82f6"/>
+          <stop offset="1" stop-color="#1e3a8a"/>
+        </linearGradient>
+      </defs>
+      <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#header-g)"/>
+      <rect x="14" y="19" width="36" height="5" rx="2.5" fill="#fff" opacity="0.95"/>
+      <rect x="14" y="29.5" width="28" height="5" rx="2.5" fill="#fff" opacity="0.8"/>
+      <rect x="14" y="40" width="20" height="5" rx="2.5" fill="#fff" opacity="0.6"/>
+      <rect x="38" y="40" width="6" height="5" rx="1" fill="#fff" opacity="0.95"/>
+    </svg>
+    klogs
+  </h1>
   <div class="pickers">
     <label>Context
       <select id="context-select"></select>
@@ -43,7 +99,16 @@
   <div class="log-tab">
     <div class="log-toolbar">
       <span class="log-title"></span>
-      <label>Tail lines <input type="number" class="tail-lines" placeholder="all" min="1"></label>
+      <label>Show last
+        <select class="max-lines">
+          <option value="100">100</option>
+          <option value="1000" selected>1000</option>
+          <option value="2000">2000</option>
+          <option value="4000">4000</option>
+          <option value="all">All</option>
+        </select>
+      </label>
+      <button class="now-btn" title="Jump to now, skip history">now</button>
       <label><input type="checkbox" class="previous-toggle"> previous</label>
       <button class="autoscroll-toggle" title="Toggle autoscroll (a)">autoscroll: on</button>
       <button class="wordwrap-toggle" title="Toggle word wrap (w)">wrap: on</button>

@@ -13,14 +13,15 @@ import (
 
 // Server holds the dependencies shared by the HTTP handlers.
 type Server struct {
-	km  *k8s.Manager
-	log *slog.Logger
+	km      *k8s.Manager
+	log     *slog.Logger
+	version string
 }
 
 // New builds the full HTTP handler for klogs: the REST/WebSocket API under
 // /api and /ws, and the embedded static frontend for everything else.
-func New(km *k8s.Manager, log *slog.Logger) (http.Handler, error) {
-	s := &Server{km: km, log: log}
+func New(km *k8s.Manager, log *slog.Logger, version string) (http.Handler, error) {
+	s := &Server{km: km, log: log, version: version}
 
 	static, err := fs.Sub(web.Static, "static")
 	if err != nil {

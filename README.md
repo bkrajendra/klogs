@@ -63,17 +63,31 @@ KLOGS_VERSION=v0.1.1 curl -fsSL https://raw.githubusercontent.com/bkrajendra/klo
 
 ## Features
 
-- Top filter bar: context → namespace → workload (Deployment/Service) →
-  pod → container. Picking a pod (or container, for multi-container pods)
-  opens its logs immediately — no extra click needed.
-- Multi-tab live log streaming (WebSocket) with autoscroll, word-wrap, and
-  full-screen toggles — each with a keyboard shortcut (`a`/`w`/`f`) while a
-  tab is active. Close a single tab from its own × or clear the whole strip
-  with "close all".
-- Log download, and a "previous container" toggle for crash-looping pods.
+- Splash screen on load with the version, keyboard shortcuts, and a
+  "Get started" dismiss (or just press any key/click outside/wait a few
+  seconds).
+- Top filter bar: context → namespace → workload (`[d]`eployment/`[s]`ervice)
+  → pod → container. Picking a pod (or container, for multi-container pods)
+  opens its logs immediately — no extra click needed. Context and
+  namespace are remembered across restarts (`localStorage`).
+- Tabs start at the tail of the log (last 1000 lines by default, not the
+  whole history) and stream forward from there; scroll up any time to read
+  further back. **Show last** (100/1000/2000/4000/All) controls both how
+  far back a (re)connect starts and how many lines stay buffered in the
+  browser during a long-running session; **now** jumps to the current
+  moment, skipping history entirely (like `--tail=0`). None of this
+  affects **download** — it always fetches the complete log fresh from the
+  server.
+- Multi-tab live log streaming (WebSocket) with autoscroll (auto-pauses if
+  you scroll up, resumes at the bottom), word-wrap, and full-screen
+  toggles — each with a keyboard shortcut (`a`/`w`/`f`) while a tab is
+  active. Close a single tab from its own × or clear the whole strip with
+  "close all".
+- A "previous container" toggle for crash-looping pods.
 - Restart the Deployment (or the Deployment behind a Service) a tab's pod
   belongs to, right from that tab's toolbar (`r` shortcut), with a
-  confirmation prompt first.
+  confirmation prompt first. Once the old pod is replaced, klogs picks up
+  the new one automatically and opens a tab for it.
 - Light/dark theme toggle, persisted locally.
 
 ## Build from source

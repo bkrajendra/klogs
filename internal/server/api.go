@@ -11,6 +11,7 @@ import (
 )
 
 func (s *Server) registerAPI(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/version", s.handleVersion)
 	mux.HandleFunc("GET /api/contexts", s.handleContexts)
 	mux.HandleFunc("GET /api/namespaces", s.handleNamespaces)
 	mux.HandleFunc("GET /api/workloads", s.handleWorkloads)
@@ -33,6 +34,10 @@ func writeJSON(w http.ResponseWriter, v any) {
 func writeError(w http.ResponseWriter, status int, err error) {
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+}
+
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]string{"version": s.version})
 }
 
 func (s *Server) handleContexts(w http.ResponseWriter, r *http.Request) {

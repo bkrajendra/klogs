@@ -78,6 +78,7 @@ All under `/api`. JSON responses.
 
 | Method | Path | Description |
 |---|---|---|
+| GET | `/api/version` | `{"version": "..."}` — same string as `klogs --version`, used by the splash screen. |
 | GET | `/api/contexts` | List kubeconfig contexts + which is current. |
 | GET | `/api/namespaces?context=` | List namespaces in the selected context. |
 | GET | `/api/workloads?context=&namespace=` | List Deployments and Services in the namespace, each with pod count/ready status. |
@@ -136,30 +137,89 @@ Everything else in the API stays read-only (`list`/`get`/`get log`).
 
 Layout, top to bottom:
 
+0. **Splash screen**: shown on every page load, dismissed by its button,
+   Escape/any key, a backdrop click, or automatically after 6s. Shows an
+   original SVG logo (an abstract "log lines" mark, not the Kubernetes
+   logo), the running version (fetched from `/api/version`), the keyboard
+   shortcut legend, and a "Designed by Rajendra Khope /
+   rajendrakhope.com" credit line. It's decoration on top of the already-
+   loading app underneath, not a gate — the context/namespace/etc. fetches
+   in `init()` proceed in parallel regardless of whether it's dismissed.
 1. **Top filter bar**: a cascading chain of dropdowns — context → namespace
-   → workload (Deployment/Service, combined in one list) → pod → container
+   → workload (Deployment/Service, shown as `[d]`/`[s]`) → pod → container
    (only shown when the pod has more than one container) — plus a
-   light/dark theme toggle (persisted in `localStorage`, defaults to the OS
-   preference). Each select repopulates/resets the ones after it when
-   changed.
+   light/dark theme toggle. Context and namespace selections are persisted
+   in `localStorage` and restored on the next load (falling back to the
+   kubeconfig's current context / the `default` namespace if the saved
+   value no longer exists). Each select repopulates/resets the ones after
+   it when changed.
 2. **Auto-opening logs**: picking a pod (or, for multi-container pods,
    picking/confirming a container) immediately opens a new log tab for it —
    there's no separate "open logs" button. Picking a different container
    for the same pod opens another tab, so multiple containers/pods can be
-   compared side by side.
+   compared side by side. New tabs start at the tail of the log (see
+   below), not the full history, so they land where the action is.
 3. **Log viewer tabs**: one per pod/container, each with its own WebSocket
    connection, each snapshotting the context/namespace/workload/pod/
    container it was opened with (so it stays correct even if the filter bar
    selection changes afterward).
    - The tab strip shows each tab's title with its own close (×) button on
      the tab itself, plus a "close all" button for the whole strip.
-   - Toolbar per tab, in order: tail-lines input, "previous container logs"
-     toggle, autoscroll on/off, word-wrap on/off, full screen, clear,
-     download, **restart** (restarts the Deployment/Service this tab's pod
-     belongs to, behind a confirmation prompt).
+   - Toolbar per tab, in order: **Show last** (100/1000/2000/4000/All)
+     dropdown, **now** button, "previous container logs" toggle,
+     autoscroll on/off, word-wrap on/off, full screen, clear, download,
+     **restart** (restarts the Deployment/Service this tab's pod belongs
+     to, behind a confirmation prompt).
    - Keyboard shortcuts (active tab, not while typing in a field): `a`
      autoscroll, `w` word wrap, `f` full screen, `r` restart (still
      confirms before acting).
+   - Scrolling away from the bottom auto-pauses autoscroll (so a busy pod
+     doesn't yank you back down while reading history); scrolling back to
+     the bottom resumes it. This is on top of the manual autoscroll toggle,
+     not a replacement for it.
+
+### Tailing, buffering, and the "Show last" control
+
+Two related problems this addresses:
+
+- **Starting at the tail, not the whole history.** A new tab passes
+  `tailLines` equal to the "Show last" selection (default 1000) when
+  connecting, so it starts near the end of the log and streams forward
+  from there, instead of pulling the pod's entire log history on open.
+  The **now** button reconnects with `tailLines=0` for one connection
+  (skip all history, follow only what's written from this moment on)
+  without changing the dropdown's setting for later reconnects.
+- **Bounded memory during long-running tabs.** Each incoming line is
+  appended as its own DOM text node (`appendChild`), and once the tab has
+  more lines than the "Show last" setting, the oldest ones are dropped
+  from the front (`removeChild`) — a simple ring buffer. This replaced an
+  earlier implementation that did `view.textContent += line`, which
+  re-serializes the entire buffer on every single incoming line (O(n) per
+  line, so O(n²) over a session) and was the root cause of tabs — and the
+  whole page, since a busy tab's rendering starves the same main thread
+  the dropdown `change` handlers run on — becoming unresponsive after
+  running a while. Selecting **All** disables the cap (matches the old
+  unbounded behavior) as an explicit opt-in.
+- **Download is unaffected by any of this.** The download endpoint is a
+  fresh request straight to `GetLogs` on the server side — it always
+  returns the complete available log regardless of what the tab's "Show
+  last" cap or live buffer currently holds.
+
+### Restart and pod replacement
+
+A Deployment restart destroys and recreates its pods under new names, so
+after a tab's restart button succeeds, klogs polls
+`/api/workloads/{kind}/{name}/pods` (every 2s, up to ~30s) for a pod name
+that wasn't present before the restart and is `Running`. Once found:
+
+- If the top filter bar is still pointed at that same
+  context/namespace/workload, its Pod dropdown is refreshed and set to the
+  new pod.
+- A new log tab is opened automatically for the new pod (same container
+  name if it still exists, else the new pod's first container). The old
+  tab is left as-is — it naturally shows "disconnected" once its pod is
+  gone, and it still holds whatever it had buffered, so nothing is lost by
+  not closing it automatically.
 
 No frontend framework, no build tooling — plain HTML/CSS/JS served from
 `web/static/` and embedded with `go:embed` at compile time.
